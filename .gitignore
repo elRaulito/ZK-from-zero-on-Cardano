@@ -1,0 +1,29 @@
+.pre-commit-config.yaml
+**/*.bak*
+indent.log
+.claude/
+memory/
+eBook/notes/
+
+# LaTeX build artifacts
+eBook/*.pdf
+eBook/*.aux
+eBook/*.log
+eBook/*.toc
+eBook/*.bbl
+eBook/*.blg
+eBook/*.idx
+eBook/*.ilg
+eBook/*.ind
+eBook/*.ist
+eBook/*.glo
+eBook/*.glg
+eBook/*.gls
+eBook/*.run.xml
+eBook/*.fdb_latexmk
+eBook/*.fls
+eBook/*-blx.bib
+
+# Nix
+result
+result-*

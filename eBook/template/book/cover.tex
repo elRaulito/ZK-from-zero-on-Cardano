@@ -1,0 +1,72 @@
+\newcommand{\coverpage}[5]{
+  % #1 - title
+  % #2 - subtitle
+  % #3 - author
+  % #4 - date
+  % #5 - subject
+  \pagestyle{empty}
+  \newgeometry{left=0cm,top=0cm,right=0cm,bottom=0cm}
+
+  \begin{tikzpicture}[remember picture,overlay]
+
+    %%%%%%%%%%%%%%%%%%%% Layers %%%%%%%%%%%%%%%%%%%%%%%%
+    \pgfdeclarelayer{bg}    % declare background layer
+    \pgfdeclarelayer{blur}  % declare blur/hint layer
+    \pgfdeclarelayer{fg}    % declare foreground layer
+    \pgfsetlayers{bg,blur,main,fg}  % set the order of the layers
+
+    %%%%%%%%%%%%%%%%%%%% Background %%%%%%%%%%%%%%%%%%%%%%%%
+    \begin{pgfonlayer}{bg}
+      \fill[bg] (current page.south west) rectangle (current page.north east);
+    \end{pgfonlayer}
+
+    %%%%%%%%%%%%%%%%%%%% Background Circles %%%%%%%%%%%%%%%%%%%%
+
+    % top left
+    \foreach \i in {0.5,...,2} {\drawcircle{}{$(current page.north west)+(2.5,0)$}{\i cm}{gray!40,draw};}
+
+    % bottom left
+    \foreach \i in {2.5,...,22} {\drawcircle{}{$(current page.west)+(2.5,-5)$}{\i cm}{gray!40,draw};}
+
+    % center right
+    \foreach \i in {0.5,...,22} {\drawcircle{}{$(current page.north east)+(0,-9.5)$}{\i cm}{gray!70,draw};}
+
+    % bottom right
+    \foreach \i in {21,...,2} {\drawcircle{}{$(current page.south east)+(-0.2,-0.45)$}{\i cm}{gray!60,draw};}
+
+    %%%%%%%%%%%%%%%%%%%% Blurred ZK Content %%%%%%%%%%%%%%%%%%%%
+    \begin{pgfonlayer}{blur}
+      % Faded mathematical notation hinting at ZK
+      \node[opacity=0.15, rotate=15, font=\fontsize{28}{34}\selectfont] at ($(current page.north west)+(5,-4)$) {\color{fg}$P(x) \cdot H(x) = T(x)$};
+      \node[opacity=0.18, rotate=-8, font=\fontsize{22}{26}\selectfont] at ($(current page.center)+(-4,5)$) {\color{fg}$\pi \leftarrow \text{Prove}(pk, x, w)$};
+      \node[opacity=0.12, rotate=25, font=\fontsize{18}{22}\selectfont] at ($(current page.center)+(5,3)$) {\color{fg}$\text{Verify}(vk, x, \pi) = 1$};
+      \node[opacity=0.16, rotate=-15, font=\fontsize{16}{20}\selectfont] at ($(current page.south west)+(6,6)$) {\color{fg}$e(A, B) = e(C, D)$};
+      \node[opacity=0.14, rotate=10, font=\fontsize{20}{24}\selectfont] at ($(current page.east)+(-3,2)$) {\color{fg}$\sum_{i=0}^{n} a_i \cdot \omega^i$};
+      \node[opacity=0.10, rotate=-20, font=\fontsize{24}{28}\selectfont] at ($(current page.south)+(2,4)$) {\color{fg}$\mathbb{F}_p[x] / (x^n + 1)$};
+
+      % Faded ZK keywords
+      \node[opacity=0.12, rotate=5, font=\fontsize{14}{16}\selectfont\sffamily] at ($(current page.north)+(2,-6)$) {\color{fg}zero-knowledge};
+      \node[opacity=0.14, rotate=-12, font=\fontsize{12}{14}\selectfont\sffamily] at ($(current page.west)+(5,-2)$) {\color{fg}witness};
+      \node[opacity=0.10, rotate=18, font=\fontsize{16}{18}\selectfont\sffamily] at ($(current page.south east)+(-5,8)$) {\color{fg}verifier};
+      \node[opacity=0.16, rotate=-5, font=\fontsize{13}{15}\selectfont\sffamily] at ($(current page.north east)+(-6,-3)$) {\color{fg}prover};
+      \node[opacity=0.12, rotate=8, font=\fontsize{11}{13}\selectfont\sffamily] at ($(current page.south west)+(4,3)$) {\color{fg}soundness};
+      \node[opacity=0.14, rotate=-10, font=\fontsize{15}{17}\selectfont\sffamily] at ($(current page.center)+(0,-2)$) {\color{fg}completeness};
+      \node[opacity=0.10, rotate=22, font=\fontsize{12}{14}\selectfont\sffamily] at ($(current page.center)+(-5,-4)$) {\color{fg}SNARK};
+      \node[opacity=0.12, rotate=-18, font=\fontsize{10}{12}\selectfont\sffamily] at ($(current page.east)+(-2,-4)$) {\color{fg}trusted setup};
+      \node[opacity=0.14, rotate=3, font=\fontsize{13}{15}\selectfont\sffamily] at ($(current page.north west)+(8,-8)$) {\color{fg}polynomial commitment};
+    \end{pgfonlayer}
+
+    %%%%%%%%%%%%%%%%%%%% Title + Subtitle %%%%%%%%%%%%%%%%%%%%
+    \node[left, rounded corners, minimum width=\paperwidth, minimum height=3cm, text width=\paperwidth, rotate=-60, text=fg, align=right, font=\headingfontfamily] at ($(current page.center)+(3.2,-3.2)$) {\Huge\textsc{\textbf{ZK from Zero on Cardano}}};
+
+    %%%%%%%%%%%%%%%%%%%% Author Name %%%%%%%%%%%%%%%%%%%%
+    \begin{pgfonlayer}{fg}
+      \node[left, rounded corners, minimum width=\paperwidth, minimum height=2cm, text width=\paperwidth, text=fg, anchor=east, align=right, font=\headingfontfamily] at ($(current page.east)+(-0.5,-5.2)$) {\Large\textsc{by ElRaulito}};
+    \end{pgfonlayer}
+
+    %%%%%%%%%%%%%%%%%%%% Year %%%%%%%%%%%%%%%%%%%%
+    \drawcircle{\Large 2025}{$(current page.west)+(2.5,-5)$}{2.5 cm}{gray!40,draw,text=fg,font=\headingfontfamily};
+
+  \end{tikzpicture}
+  \restoregeometry
+}

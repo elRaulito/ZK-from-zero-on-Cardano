@@ -1,0 +1,36 @@
+\usepackage{lipsum}
+\usepackage[automake,toc]{glossaries}
+\usepackage{caption}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\makeglossaries
+
+\begin{document}
+
+% =======================================================================================
+\coverpage{\TITLE}{\SUBTITLE}{\AUTHOR}{\DATE}{\SUBJECT}
+%----------------------------------------------------------------------------------------
+\newpage
+\tableofcontents
+
+% =======================================================================================
+%                                   PART I
+% =======================================================================================
+\part{Foundations of\\Zero-Knowledge}
+%----------------------------------------------------------------------------------------
+\newpage
+\chapter{Introduction to Zero-Knowledge Proofs} \label{ch:introduction}
+\input{sections/part1/introduction}
+
+% =======================================================================================
+%                                   PART II
+% =======================================================================================
+\part{Origins and\\Evolution}
+%----------------------------------------------------------------------------------------
+\newpage
+\chapter{The History of ZK} \label{ch:history}
+\input{sections/part2/history}
+
+\end{document}

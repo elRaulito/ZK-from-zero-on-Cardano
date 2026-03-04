@@ -1,0 +1,35 @@
+\usepackage[all]{background}
+
+%----------------------------------------------------------------------------------------
+%   SHOW / HIDE PART TITLE IN THE LEFT BAR
+%----------------------------------------------------------------------------------------
+
+\newif\ifbackgroundtitlevisible
+\backgroundtitlevisibletrue
+
+\newif\ifbackgroundbarvisible
+\backgroundbarvisibletrue
+
+%----------------------------------------------------------------------------------------
+%   CONFIGURE LEFT BAR
+%----------------------------------------------------------------------------------------
+
+\backgroundsetup{
+  scale=1,
+  color=black,
+  opacity=1,
+  angle=0,
+  position=current page.south west,
+  vshift=0mm,
+  hshift=16mm, % Adjust the distance from the left edge of the page
+  contents={%
+      \tikz{
+        \ifbackgroundbarvisible
+          \fill[black] (0,\paperheight) rectangle (8mm,-\paperheight); % bar width 6mm
+        \fi
+        \ifbackgroundtitlevisible
+          \node[rotate=90, fgacc, font=\huge\bfseries\headingfontfamily, anchor=west] at (4mm, 16mm) {\currentparttitle};
+        \fi
+      }
+    }
+}

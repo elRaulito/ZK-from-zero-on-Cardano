@@ -1,0 +1,88 @@
+
+\section{The Origins of Zero-Knowledge}
+
+Zero-Knowledge proofs were invented in \textbf{1985} by Shafi Goldwasser, Silvio Micali, and Charles Rackoff at MIT. Their paper --- \textit{The Knowledge Complexity of Interactive Proof Systems} --- introduced the concept of an interactive proof where a prover convinces a verifier of the truth of a statement while revealing nothing beyond that truth. The paper won the Gödel Prize in 1993 and is widely considered one of the most influential works in the history of cryptography.
+
+At the time, the result was purely theoretical. The proof systems described required many rounds of interaction, were expensive to compute, and existed only to answer a complexity-theoretic question: \emph{how much ``knowledge'' does a proof leak?} The answer, in some cases, was: none.
+
+\section{From Theory to Practice}
+
+\subsection*{The Schnorr Protocol}
+
+A landmark step toward practicality came with Claus-Peter Schnorr's identification scheme (1989). The \textbf{Schnorr protocol} is a three-move sigma protocol:
+
+\begin{enumerate}
+  \item The prover commits to a random value.
+  \item The verifier sends a random challenge.
+  \item The prover responds with a value that combines the challenge with their secret.
+\end{enumerate}
+
+The verifier can check the response without learning the secret. Sigma protocols like this are the ancestors of almost every practical ZK system in use today.
+
+\subsection*{The Fiat--Shamir Heuristic}
+
+In 1986, Amos Fiat and Adi Shamir showed how to convert any sigma protocol into a \textbf{non-interactive} proof by replacing the verifier's random challenge with a hash of the prover's commitment. The resulting proof can be generated offline and verified by anyone --- no live interaction needed. This single insight is what makes ZK proofs viable on blockchains.
+
+\subsection*{Schnorr Signatures on Cardano with FROST}
+
+Schnorr signatures eventually became a production cryptographic primitive. Today you can use them on Cardano through the \textbf{FROST} threshold signature protocol, accessible at \texttt{https://www.frost.express/}. FROST allows a group of participants to collaboratively sign a message with a Schnorr signature in a way that is indistinguishable from a single-signer scheme on-chain, with no single party holding the full private key.
+
+\section{The SNARK Revolution}
+
+Through the 2000s and early 2010s, researchers worked to make ZK proofs efficient enough for real applications. The breakthrough came in 2013--2016 with a family of constructions called \textbf{zk-SNARKs}.
+
+\paragraph{Trusted setup and Groth16.}
+The most efficient SNARK construction is \textbf{Groth16} (Jens Groth, 2016). It produces proofs of only $\sim$200 bytes that verify in milliseconds --- fast enough for on-chain use. The catch is a \emph{trusted setup ceremony}: a group of participants must generate public parameters, and if any participant keeps their secret ``toxic waste'', they could forge proofs. In practice, multi-party ceremonies with hundreds of participants make this risk negligible.
+
+\paragraph{Zcash and real-world deployment.}
+\textbf{Zcash} (2016) was the first large-scale deployment of zk-SNARKs. It uses Groth16 to let users make shielded transactions: the blockchain verifies a proof that the sender has enough funds and the transaction is balanced, without revealing amounts or addresses.
+
+\paragraph{Universal setups.}
+Circuit-specific trusted setups are impractical for general use. \textbf{PLONK} (2019) and \textbf{Marlin} introduced \emph{universal} setups: a single ceremony valid for any circuit up to a given size. This enabled the modern ecosystem of general-purpose zkVMs and zkEVMs.
+
+\section{Modern ZK: STARKs and Beyond}
+
+\paragraph{STARKs.}
+\textbf{Eli Ben-Sasson} and colleagues at the Technion introduced \textbf{zk-STARKs} in 2018. STARKs require \emph{no trusted setup} --- all parameters are public and derived from collision-resistant hash functions. They are also believed to be post-quantum secure. The trade-off is proof size: a STARK proof can be tens to hundreds of kilobytes versus a few hundred bytes for a SNARK.
+
+\textbf{StarkWare} built an entire ecosystem around STARKs: \textit{StarkEx} powers major DeFi protocols, and \textit{StarkNet} is a permissionless L2 on Ethereum.
+
+\paragraph{ZK Rollups.}
+The rollup model took off around 2020--2022. \textbf{zkSync}, \textbf{Scroll}, and \textbf{Polygon zkEVM} all use ZK proofs to compress thousands of Ethereum transactions into a single on-chain verification, achieving Ethereum security with a fraction of the gas cost.
+
+\paragraph{Recent developments.}
+The frontier is moving fast: \emph{folding schemes} like \textbf{Nova} (2021) allow recursive proof composition with near-zero overhead; \emph{lookup arguments} like Plookup dramatically reduce the cost of proving table lookups and bit operations; and \emph{zkVMs} such as RISC Zero let developers write programs in Rust and get a ZK proof of correct execution essentially for free.
+
+\section{ZK Arrives on Cardano}
+
+\subsection*{Plutus V3 and BLS12-381 Primitives}
+
+With the Chang hard fork (2024), Cardano gained \textbf{Plutus V3} and a set of native BLS12-381 elliptic curve primitives. These allow on-chain verification of Groth16 proofs without any workarounds. The primitives are available in Aiken's standard library:
+
+\begin{itemize}
+  \item \texttt{aiken/crypto/bls12\_381/g1} --- operations on the $\mathbb{G}_1$ group
+  \item \texttt{aiken/crypto/bls12\_381/g2} --- operations on the $\mathbb{G}_2$ group
+  \item Pairing operations: \texttt{miller\_loop} and \texttt{final\_verify}
+\end{itemize}
+
+See the full API at \texttt{https://aiken-lang.github.io/stdlib/aiken/crypto/bls12\_381/g1.html}.
+
+\subsection*{Janus Wallet}
+
+The most complete open-source ZK project on Cardano today is \textbf{Janus Wallet}, available at:
+
+\begin{center}
+  \texttt{https://github.com/leobel/janus-wallet}
+\end{center}
+
+Janus demonstrates a working Groth16 verifier on Cardano: a user generates a ZK proof off-chain that they know a secret, and the on-chain Aiken validator verifies the proof and releases the UTxO. It is the closest thing Cardano has to a production-grade ZK smart contract today.
+
+\subsection*{What This Book Covers}
+
+The rest of this book is structured as a progressive journey:
+
+\begin{enumerate}
+  \item \textbf{Starting from basics} --- proving knowledge of a secret value and using a ZK proof to spend a UTxO on Cardano.
+  \item \textbf{Compression} --- using off-chain computation with on-chain verification to batch many operations into a single transaction.
+  \item \textbf{Advanced constructions} --- privacy-preserving patterns studied for academic purposes. All material here is for educational use. This book does not promote protocols designed to obscure transaction data.
+\end{enumerate}
