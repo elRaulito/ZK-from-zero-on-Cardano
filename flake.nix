@@ -11,69 +11,31 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
+        # scheme-medium covers the vast majority of what we need;
+        # we only add packages not included in it.
         texlive = pkgs.texlive.combine {
           inherit (pkgs.texlive)
-            scheme-basic
-            # engine
-            luatex
-            luatexbase
-            # document class
-            latex
-            latexmk
-            # fonts
-            fontspec
-            inconsolata
-            lm
-            lm-math
-            # math
-            amsmath
-            amsfonts
-            amssymb
-            amsthm
-            # layout
-            geometry
-            fancyhdr
-            titlesec
-            titletoc
-            enumitem
-            microtype
-            pdflscape
-            # graphics and tikz
-            tikz-cd
-            pgf
-            # color
-            xcolor
-            pagecolor
-            # tables
-            booktabs
-            # boxes
+            scheme-medium   # latex, amsmath, amsfonts, babel, fontspec, geometry,
+                            # graphicx, hyperref, listings, microtype, pgf/tikz,
+                            # titlesec, xcolor, fancyhdr, booktabs, caption,
+                            # enumitem, pdflscape, calc, makeidx, lm, luatex, ...
+            # extras not in scheme-medium
             tcolorbox
             environ
-            # hyperlinks
-            hyperref
+            trimspaces
+            pagecolor
+            background
             bookmark
             hypcap
-            # bibliography
             biblatex
-            bibtex
-            # captions
-            caption
-            # code listings
-            listings
-            # glossaries
+            biber
             glossaries
             mfirstuc
             xfor
             datatool
             substr
-            # misc
-            babel
-            babel-english
-            background
-            calc
-            graphicx
-            makeidx
             lipsum
+            luatexbase
             ;
         };
 
@@ -90,7 +52,6 @@
             export TEXMFVAR=$TMPDIR/texmf-var
             export TEXMFCONFIG=$TMPDIR/texmf-config
 
-            # Copy font files so lualatex can find them
             cp -r . $TMPDIR/build
             cd $TMPDIR/build
 
