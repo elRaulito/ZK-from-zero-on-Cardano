@@ -32,6 +32,8 @@
             cd $TMPDIR/build
 
             lualatex -interaction=nonstopmode light.tex
+            lualatex -interaction=nonstopmode light.tex
+            lualatex -interaction=nonstopmode dark.tex
             lualatex -interaction=nonstopmode dark.tex
           '';
 
