@@ -11,32 +11,8 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        # scheme-medium covers the vast majority of what we need;
-        # we only add packages not included in it.
         texlive = pkgs.texlive.combine {
-          inherit (pkgs.texlive)
-            scheme-medium   # latex, amsmath, amsfonts, babel, fontspec, geometry,
-                            # graphicx, hyperref, listings, microtype, pgf/tikz,
-                            # titlesec, xcolor, fancyhdr, booktabs, caption,
-                            # enumitem, pdflscape, calc, makeidx, lm, luatex, ...
-            # extras not in scheme-medium
-            tcolorbox
-            environ
-            trimspaces
-            pagecolor
-            background
-            bookmark
-            hypcap
-            biblatex
-            biber
-            glossaries
-            mfirstuc
-            xfor
-            datatool
-            substr
-            lipsum
-            luatexbase
-            ;
+          inherit (pkgs.texlive) scheme-full;
         };
 
       in {
