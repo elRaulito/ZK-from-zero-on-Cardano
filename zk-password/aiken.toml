@@ -1,0 +1,9 @@
+name = "chapter6/zk-password"
+version = "0.0.0"
+compiler = "v1.1.9"
+description = "Chapter 6 example: unlock funds by proving knowledge of a password using Groth16 on BLS12-381"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v2.1.0"
+source = "github"

@@ -1,0 +1,506 @@
+\section{The Circuit Pipeline} \label{sec:circuit-pipeline}
+
+Writing a ZK smart contract on Cardano is not a single-language problem. It involves a chain of tools that each play a different role:
+
+\begin{enumerate}
+  \item \textbf{Circom} --- a domain-specific language for describing arithmetic circuits.
+  \item \textbf{snarkjs} --- a JavaScript library that runs the trusted setup ceremony, compiles witness calculations, and generates / verifies Groth16 proofs.
+  \item \textbf{Aiken} --- the on-chain language where the Cardano validator lives and where the ZK proof is verified against the circuit's public verification key.
+\end{enumerate}
+
+The high-level flow is:
+
+\begin{center}
+\begin{tabular}{ccccc}
+  Circom circuit & $\longrightarrow$ & snarkjs trusted setup & $\longrightarrow$ & verification key \\
+  & & $\downarrow$ & & $\downarrow$ \\
+  & & Groth16 proof & $\longrightarrow$ & Aiken validator
+\end{tabular}
+\end{center}
+
+The circuit defines the \emph{rules}. The trusted setup ceremony produces the public parameters that let anyone prove and verify statements about those rules. The proof is generated off-chain by the user. The Aiken validator checks the proof on-chain --- a single, fast pairing check using the BLS12-381 primitives introduced in Plutus V3.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Writing a Circuit in Circom} \label{sec:circom}
+
+Circom is a language for expressing computations as \textbf{arithmetic circuits} --- networks of addition and multiplication gates over a finite field. Every statement you want to prove must be reducible to a set of polynomial constraints called an \textbf{R1CS} (Rank-1 Constraint System).
+
+\subsection*{Installing the Tools}
+
+Install snarkjs globally:
+
+\begin{verbatim}
+npm install -g snarkjs
+\end{verbatim}
+
+Install Circom by following the official guide at \texttt{docs.circom.io/getting-started/installation}. On Linux/macOS this compiles from Rust source:
+
+\begin{verbatim}
+git clone https://github.com/iden3/circom.git
+cd circom
+cargo build --release
+cargo install --path circom
+\end{verbatim}
+
+Install the circomlib circuit library (contains Poseidon and other primitives):
+
+\begin{verbatim}
+npm install -D circomlib
+\end{verbatim}
+
+\subsection*{The Janus Wallet Authentication Circuit}
+
+Janus Wallet\footnote{\texttt{https://github.com/leobel/janus-wallet}} is the most complete open-source ZK project on Cardano. It uses a circuit that proves a user knows their password without ever sending it on-chain. The circuit is built on the \textbf{Poseidon} hash function --- a ZK-friendly hash designed to be cheap to prove inside arithmetic circuits (unlike SHA-256, which is extremely expensive to circuit-encode).
+
+The circuit has five \textbf{public} inputs (visible on-chain) and one \textbf{private} input (the secret that never leaves the user's device):
+
+\begin{verbatim}
+pragma circom 2.1.6;
+
+include "../../../node_modules/circomlib/circuits/poseidon.circom";
+
+template Authenticate() {
+    signal input userId;        // Public: username identifier
+    signal input credentialHash; // Public: Poseidon(pwd, userId)
+    signal input challenge;      // Public: nonce from the smart contract
+    signal input challengeFlag;  // Public: overflow flag for challenge
+    signal input circuitHash;    // Public: Poseidon(pwd, userId, credentialHash,
+                                 //                  challenge, challengeFlag)
+    signal input pwd;            // Private: user password
+
+    // Step 1: verify credentialHash = Poseidon(pwd, userId)
+    component p = Poseidon(2);
+    p.inputs[0] <== pwd;
+    p.inputs[1] <== userId;
+    credentialHash === p.out;
+
+    // Step 2: verify circuitHash = Poseidon(pwd, userId, credentialHash,
+    //                                        challenge, challengeFlag)
+    component poseidon = Poseidon(5);
+    poseidon.inputs[0] <== pwd;
+    poseidon.inputs[1] <== userId;
+    poseidon.inputs[2] <== credentialHash;
+    poseidon.inputs[3] <== challenge;
+    poseidon.inputs[4] <== challengeFlag;
+    circuitHash === poseidon.out;
+}
+
+component main {public [userId, credentialHash, challenge,
+                         challengeFlag, circuitHash]} = Authenticate();
+\end{verbatim}
+
+The \texttt{===} operator asserts a constraint: if the constraint is violated, no valid proof can be produced. The \texttt{<==} operator assigns and constrains in one step.
+
+The \texttt{challenge} and \texttt{challengeFlag} fields are critical for replay protection. The smart contract changes the challenge after every successful spend, so a proof generated for one transaction cannot be reused in another.
+
+\subsection*{Compiling the Circuit}
+
+\begin{verbatim}
+circom --r1cs --wasm --c --sym --inspect \
+       --prime bls12381 circuit.circom -o .
+\end{verbatim}
+
+\begin{remark}
+Run this command from the directory where your \texttt{include} path can reach the circomlib node module. For Janus Wallet this is \texttt{src/zkproof/janus-wallet/}.
+\end{remark}
+
+The flags produce:
+
+\begin{itemize}
+  \item \texttt{circuit.r1cs} --- the constraint system in binary format.
+  \item \texttt{circuit\_js/circuit.wasm} --- WebAssembly witness calculator.
+  \item \texttt{circuit.sym} --- symbol table for debugging.
+\end{itemize}
+
+The \texttt{--prime bls12381} flag targets the BLS12-381 curve, which matches Cardano's on-chain primitives.
+
+Inspect the compiled circuit:
+
+\begin{verbatim}
+snarkjs r1cs info circuit.r1cs
+\end{verbatim}
+
+For the Janus circuit you should see:
+
+\begin{verbatim}
+[INFO] snarkJS: Curve: bls12-381
+[INFO] snarkJS: # of Wires: 1357
+[INFO] snarkJS: # of Constraints: 1352
+[INFO] snarkJS: # of Private Inputs: 1
+[INFO] snarkJS: # of Public Inputs: 5
+[INFO] snarkJS: # of Outputs: 0
+\end{verbatim}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{The Trusted Setup Ceremony} \label{sec:trusted-setup}
+
+Groth16 requires a two-phase trusted setup. Phase 1 (Powers of Tau) is circuit-independent and can be reused across projects. Phase 2 is circuit-specific and ties the parameters to your exact R1CS.
+
+\subsection*{Phase 1: Powers of Tau}
+
+\paragraph{1. Start a new ceremony.}
+
+\begin{verbatim}
+snarkjs powersoftau new bls12381 14 pot14_0000.ptau -v
+\end{verbatim}
+
+The second argument (\texttt{14}) is the power of two of the maximum number of constraints: $2^{14} = 16{,}384$. Choose the smallest power that fits your circuit to keep file sizes manageable. The maximum supported is $2^{28} \approx 268$ million constraints.
+
+\paragraph{2--3. Contribute randomness.}
+
+Multiple contributors make the ceremony secure: the parameters are safe as long as \emph{at least one} contributor honestly discarded their secret after contributing.
+
+\begin{verbatim}
+snarkjs powersoftau contribute pot14_0000.ptau pot14_0001.ptau \
+    --name="First contribution" -v
+
+snarkjs powersoftau contribute pot14_0001.ptau pot14_0002.ptau \
+    --name="Second contribution" -v -e="some random text"
+\end{verbatim}
+
+The \texttt{-e} flag provides entropy inline, making the step non-interactive --- useful in scripts.
+
+\paragraph{4. (Optional) Third-party contribution.}
+
+You can mix contributions from different software:
+
+\begin{verbatim}
+snarkjs powersoftau export challenge pot14_0002.ptau challenge_0003
+
+snarkjs powersoftau challenge contribute bls12381 challenge_0003 \
+    response_0003 -e="some random text"
+
+snarkjs powersoftau import response pot14_0002.ptau response_0003 \
+    pot14_0003.ptau -n="Third contribution name"
+\end{verbatim}
+
+\paragraph{5. Verify the ceremony so far.}
+
+\begin{verbatim}
+snarkjs powersoftau verify pot14_0003.ptau
+\end{verbatim}
+
+A clean run ends with \texttt{Powers Of tau OK!}
+
+\paragraph{6. Apply a random beacon.}
+
+A random beacon finalises Phase 1. It is a delayed hash function evaluated on a publicly known, high-entropy value --- for example, the hash of a specific Cardano block, or a national lottery result announced after the ceremony began.
+
+\begin{verbatim}
+snarkjs powersoftau beacon pot14_0003.ptau pot14_beacon.ptau \
+    3c692631872308ff1f9fed102b940aecee160def9c2478b50b977091 \
+    10 -n="Final Beacon"
+\end{verbatim}
+
+The \texttt{10} argument means $2^{10} = 1024$ iterations of the hash --- enough to make the beacon computationally irreversible.
+
+\begin{highlight}
+\textbf{Why a random beacon?} If a contributor could predict the beacon before their contribution, they might be able to bias the parameters. An unpredictable, publicly verifiable source of randomness prevents this. Janus Wallet uses the \texttt{policy\_id} under which all account tokens are minted as its beacon value.
+\end{highlight}
+
+\paragraph{7. Prepare Phase 2.}
+
+\begin{verbatim}
+snarkjs powersoftau prepare phase2 pot14_beacon.ptau pot14_final.ptau -v
+\end{verbatim}
+
+This pre-computes the encrypted Lagrange polynomial evaluations needed in Phase 2.
+
+\paragraph{8. Final verification.}
+
+\begin{verbatim}
+snarkjs powersoftau verify pot14_final.ptau
+\end{verbatim}
+
+Unlike step 5, this run will \emph{not} warn about missing phase 2 values --- that means the file is ready.
+
+\subsection*{Phase 2: Circuit-Specific Setup}
+
+\paragraph{9--10. Compile the circuit and generate the initial zkey.}
+
+\begin{verbatim}
+snarkjs groth16 setup circuit.r1cs pot14_final.ptau circuit_0000.zkey
+\end{verbatim}
+
+\begin{remark}
+Do not use \texttt{circuit\_0000.zkey} in production. It has zero contributions and is not safe.
+\end{remark}
+
+\paragraph{11--12. Add contributions to Phase 2.}
+
+\begin{verbatim}
+snarkjs zkey contribute circuit_0000.zkey circuit_0001.zkey \
+    --name="1st Contributor Name" -v
+
+snarkjs zkey contribute circuit_0001.zkey circuit_0002.zkey \
+    --name="Second contribution" -v -e="Another random entropy"
+\end{verbatim}
+
+\paragraph{13. (Optional) Third-party Phase 2 contribution.}
+
+\begin{verbatim}
+snarkjs zkey export bellman circuit_0002.zkey challenge_phase2_0003
+snarkjs zkey bellman contribute bls12381 challenge_phase2_0003 \
+    response_phase2_0003 -e="some random text"
+snarkjs zkey import bellman circuit_0002.zkey response_phase2_0003 \
+    circuit_0003.zkey -n="Third contribution name"
+\end{verbatim}
+
+\paragraph{14. Verify the zkey.}
+
+\begin{verbatim}
+snarkjs zkey verify circuit.r1cs pot14_final.ptau circuit_0003.zkey
+\end{verbatim}
+
+Output: \texttt{[INFO] snarkJS: ZKey Ok!}
+
+\paragraph{15. Apply the random beacon and export the verification key.}
+
+\begin{verbatim}
+snarkjs zkey beacon circuit_0003.zkey circuit_final.zkey \
+    0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f \
+    10 -n="Final Beacon phase2"
+
+snarkjs zkey verify circuit.r1cs pot14_final.ptau circuit_final.zkey
+
+snarkjs zkey export verificationkey circuit_final.zkey verification_key.json
+\end{verbatim}
+
+\texttt{verification\_key.json} contains the public parameters that will be embedded in the Aiken smart contract (as an on-chain token) and used to verify every proof.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Generating and Verifying a Proof} \label{sec:proof-gen}
+
+\subsection*{Prepare Inputs}
+
+Create an \texttt{input.json} with the circuit's signals. Note that large integers must be quoted strings to avoid JSON precision loss:
+
+\begin{verbatim}
+{
+    "userId": "52435875175126190479447740508185965837690552500527637822...",
+    "credentialHash": "17469782945530594987388377835453341901430155623074...",
+    "challenge": "17469782945530594987388377835453341901430155623074104...",
+    "challengeFlag": "1",
+    "circuitHash": "24883872159189864133794802823127472657146334491119345...",
+    "pwd": "52435875175126190479447740508185965837690552500527637822..."
+}
+\end{verbatim}
+
+\subsection*{Calculate the Witness}
+
+The witness is the complete set of wire values for all signals in the circuit given your specific inputs.
+
+\begin{verbatim}
+snarkjs wtns calculate circuit_js/circuit.wasm input.json witness.wtns
+snarkjs wtns check circuit.r1cs witness.wtns
+\end{verbatim}
+
+A valid witness prints \texttt{WITNESS IS CORRECT}.
+
+\subsection*{Generate the Proof}
+
+\begin{verbatim}
+snarkjs groth16 prove circuit_final.zkey witness.wtns proof.json public.json
+\end{verbatim}
+
+This produces:
+\begin{itemize}
+  \item \texttt{proof.json} --- the Groth16 proof ($\pi_A$, $\pi_B$, $\pi_C$ elliptic curve points).
+  \item \texttt{public.json} --- the values of the public inputs (visible to the verifier).
+\end{itemize}
+
+Or in a single step:
+
+\begin{verbatim}
+snarkjs groth16 fullprove input.json circuit_js/circuit.wasm \
+    circuit_final.zkey proof.json public.json
+\end{verbatim}
+
+\subsection*{Verify Off-Chain}
+
+\begin{verbatim}
+snarkjs groth16 verify verification_key.json public.json proof.json
+\end{verbatim}
+
+Output: \texttt{[INFO] snarkJS: OK!}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Preparing the Verification Key for Cardano} \label{sec:vk-cardano}
+
+Cardano's BLS12-381 primitives work exclusively with \textbf{compressed} elliptic curve points. The \texttt{verification\_key.json} produced by snarkjs uses \emph{uncompressed} points. Before moving on-chain you must compress all $\mathbb{G}_1$ and $\mathbb{G}_2$ points: \texttt{vk\_alpha\_1}, \texttt{vk\_beta\_2}, \texttt{vk\_gamma\_2}, \texttt{vk\_delta\_2}, and every point in the \texttt{IC} array.
+
+Janus Wallet provides a script for this:
+
+\begin{verbatim}
+node --no-warnings --experimental-specifier-resolution=node \
+     --loader ts-node/esm compress_zk_verification_key.ts \
+     janus-wallet/verification_key.json \
+     janus-wallet/compressed_verification_key.json
+\end{verbatim}
+
+Run this from \texttt{src/zkproof}. The output \texttt{compressed\_verification\_key.json} is what goes on-chain.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{On-Chain Verification in Aiken} \label{sec:aiken-verification}
+
+The verification key is minted as a token on Cardano using Janus Wallet's circuit minting endpoint. This makes the parameters immutable and publicly auditable --- anyone can inspect the token and verify the ceremony.
+
+\subsection*{Minting the Circuit Token}
+
+\begin{verbatim}
+POST http://localhost:3001/circuits
+{
+    "token_name": "Circuit#000",
+    "version": 0,
+    "nonce": "some random value",
+    "circuit": {
+        "vk_alpha1":  "8f944ea2...",
+        "vk_beta2":   "81dfe069...",
+        "vk_gamma2":  "93e02b60...",
+        "vk_delta2":  "910d1b3d...",
+        "vk_ic": [
+            "8d043ff5...",
+            "86fa74a9...",
+            ...
+        ]
+    }
+}
+\end{verbatim}
+
+The endpoint mints the token under a \texttt{policy\_id} derived from the nonce. The nonce can be the beacon value used in Phase 2, linking the on-chain token cryptographically to the ceremony transcript.
+
+\subsection*{How the Aiken Validator Works}
+
+The Aiken validator performs a Groth16 pairing check using the BLS12-381 primitives:
+
+\begin{enumerate}
+  \item It reads the compressed verification key from the circuit token in the reference input.
+  \item It reads the proof ($\pi_A$, $\pi_B$, $\pi_C$) from the redeemer.
+  \item It reads the public inputs (userId, credentialHash, challenge, challengeFlag, circuitHash) from the datum.
+  \item It computes the pairing equation and calls \texttt{final\_verify} to check the proof.
+  \item If the proof is valid, the UTxO is unlocked. If not, the transaction fails.
+\end{enumerate}
+
+The Aiken test suite from Janus Wallet shows all passing scenarios:
+
+\begin{verbatim}
+aiken check -t silent .
+
++- tests/verify ----------------------------------------------
+| PASS [mem:  89791, cpu: 2541340679] verify_zk_proof
+| PASS [mem:  89791, cpu: 2541340679] verify_zk_proof_1
+| PASS [mem:  63964, cpu: 1355803465] verify_zk_proof_invalid_user
+| PASS [mem:  63964, cpu: 1355812874] verify_zk_proof_invalid_circuit_hash
+| PASS [mem:  63964, cpu: 1355812874] verify_zk_proof_invalid_challenge
+| PASS [mem:  63964, cpu: 1355812874] verify_zk_proof_invalid_proof
++----------------------------------------- 11 tests | 11 passed | 0 failed
+\end{verbatim}
+
+Notice the CPU budget for \texttt{verify\_zk\_proof}: approximately 2.5 billion units. Groth16 verification on BLS12-381 is one of the most expensive operations you can perform on-chain, but it is within Cardano's per-transaction budget --- which is why Plutus V3 added these primitives in the first place.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Janus Wallet: Putting It All Together} \label{sec:janus}
+
+Janus Wallet (\texttt{https://github.com/leobel/janus-wallet}) is the reference implementation of a ZK smart contract wallet on Cardano. Instead of signing transactions with a private key, the user proves knowledge of their password via a Groth16 circuit. The private key never exists --- there is nothing to lose or steal.
+
+\subsection*{Architecture}
+
+\begin{itemize}
+  \item \textbf{Circuit} --- the Circom Authenticate template described above.
+  \item \textbf{Off-chain server} --- a Node.js HTTP API that builds, signs (via ZK proof), and submits transactions.
+  \item \textbf{On-chain validator} --- an Aiken smart contract that verifies the Groth16 proof against the circuit token.
+  \item \textbf{PostgreSQL} --- stores user accounts, circuit data, and UTxO state.
+\end{itemize}
+
+\subsection*{Running the Server}
+
+Create a \texttt{.env} file:
+
+\begin{verbatim}
+PORT=3001
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=janus
+DB_PASSWORD=123456
+DB_NAME=janus_wallet
+CARDANO_NETWORK=Preview
+BLOCKFROST_API_URL=https://cardano-preview.blockfrost.io/api/v0
+BLOCKFROST_API_KEY=preview...
+WALLET_PRV_KEY=ed25519_sk...
+COLLATERAL_PRV_KEY=ed25519_sk...
+COLLATERAL_ADDRESS=addr_test...
+\end{verbatim}
+
+Run database migrations and start the server:
+
+\begin{verbatim}
+npm run migrate
+npm start
+\end{verbatim}
+
+\begin{remark}
+The signing logic that produces the ZK proof depends on \texttt{circom} being accessible from the process running the server. Verify with \texttt{circom --version}. If the binary is at \texttt{\$HOME/.cargo/bin} and not on your PATH, copy it to \texttt{/usr/local/bin}.
+\end{remark}
+
+\subsection*{User Lifecycle}
+
+\paragraph{Register a user.}
+
+\begin{verbatim}
+POST http://localhost:3001/wallets/{user_name}
+{
+    "hash":     "42b79954...",  // Poseidon(password, username)
+    "kdf_hash": "243262..."     // bcrypt(password, salt)
+}
+\end{verbatim}
+
+The server generates a smart contract address unique to this user and mints a profile NFT to it. The \texttt{hash} is the on-chain credential; the \texttt{kdf\_hash} lets the server authenticate requests without storing the plaintext password.
+
+\paragraph{Send funds (three steps).}
+
+\begin{verbatim}
+// 1. Build the unsigned transaction
+POST http://localhost:3001/wallets/{user_id}/build
+{ "amount": 5000000, "receive_address": "addr_test1..." }
+// Response: { "tx": "84a900..." }
+
+// 2. Sign with the ZK proof
+POST http://localhost:3001/wallets/{user_id}/sign
+{ "pwd": "supersecret", "tx": "84a900..." }
+
+// 3. Submit
+POST http://localhost:3001/wallets/{user_id}/send
+{
+    "redeemers": ["d8799f..."],  // ZK proof as CBOR
+    "tx": "84a900..."
+}
+\end{verbatim}
+
+The \texttt{redeemers} array contains the Groth16 proof serialised as CBOR. Additional redeemers in the array are bypass markers for UTxOs from the same wallet that do not require a fresh proof.
+
+\paragraph{Stake, delegate, and withdraw.}
+
+Janus Wallet supports the full Cardano staking lifecycle through the same three-step pattern (build $\to$ sign $\to$ send):
+
+\begin{verbatim}
+POST /wallets/{user_id}/pools/{pool_id}/registerAndDelegate
+POST /wallets/{user_id}/pools/{pool_id}/delegate
+POST /wallets/{user_id}/dreps/{drep_id}/delegate
+POST /wallets/{user_id}/withdraw  { "amount": 1234567 }
+\end{verbatim}
+
+\begin{highlight}
+\textbf{The key insight:} from the blockchain's perspective, every Janus transaction is a normal smart contract spend. The only thing that makes it a ZK wallet is the redeemer --- a Groth16 proof that the user knows their password, checked on-chain by the Aiken validator in a single pairing verification.
+\end{highlight}
+
+\subsection*{Full Test Results}
+
+Janus Wallet ships with 29 Aiken tests covering minting, spending, challenge construction, and ZK verification --- all passing with zero errors:
+
+\begin{verbatim}
+Summary 29 checks, 0 errors, 19 warnings
+\end{verbatim}
+
+The warnings are informational (unused variables in test helpers) and do not affect correctness.
+
+This is the complete picture of ZK on Cardano today: Circom defines the computation, snarkjs runs the ceremony and generates proofs, and Aiken verifies them on-chain using native BLS12-381 pairing operations. In the next chapters we will build our own circuit and validator from scratch.
