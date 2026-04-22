@@ -1,0 +1,28 @@
+# npm
+node_modules/
+package-lock.json
+
+# Circom compiled outputs
+circuit/circuit.r1cs
+circuit/circuit.sym
+circuit/circuit_js/
+circuit/poseidon_hash_js/
+
+# snarkjs trusted setup ceremony files
+*.ptau
+*.zkey
+
+# snarkjs generated files (per-proof, not source)
+verification_key.json
+proof.json
+public.json
+input.json
+compressed_vk.json
+compressed_proof.json
+
+# Aiken build artifacts
+build/
+plutus.json
+
+# Nested folders that don't belong here
+eBook/

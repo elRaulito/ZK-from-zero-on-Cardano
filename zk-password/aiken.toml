@@ -1,6 +1,6 @@
 name = "chapter6/zk-password"
 version = "0.0.0"
-compiler = "v1.1.9"
+compiler = "v1.1.19"
 description = "Chapter 6 example: unlock funds by proving knowledge of a password using Groth16 on BLS12-381"
 
 [[dependencies]]

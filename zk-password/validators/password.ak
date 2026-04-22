@@ -1,12 +1,12 @@
-use aiken/crypto/bls12_381/scalar.{Scalar}
+use aiken/crypto/bls12_381/scalar
 use cardano/transaction.{OutputReference, Transaction}
 use zk_password/groth16.{Proof, VerificationKey, groth16_verify}
 
 // What gets locked on-chain when you create the UTxO.
-// credential_hash = Poseidon(password), encoded as a BLS12-381 scalar (ByteArray).
+// credential_hash = Poseidon(password) as a field element integer (< scalar.field_prime).
 // vk              = the compressed Groth16 verification key for circuit.circom.
 pub type Datum {
-  credential_hash: Scalar,
+  credential_hash: Int,
   vk: VerificationKey,
 }
 
@@ -26,9 +26,10 @@ validator password_lock {
     _ctx: Transaction,
   ) {
     expect Some(d) = datum
-    // The only public input is the credential hash stored in the datum.
-    // The prover's private input (the password) never appears on-chain.
-    groth16_verify(d.vk, redeemer.proof, [d.credential_hash])
+    // Convert the stored integer back to a Scalar at runtime.
+    // scalar.new fails if the value is out of range, which prevents malformed datums.
+    expect Some(hash_scalar) = scalar.new(d.credential_hash)
+    groth16_verify(d.vk, redeemer.proof, [hash_scalar])
   }
 
   else(_) {
