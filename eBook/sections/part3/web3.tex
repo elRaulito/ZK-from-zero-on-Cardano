@@ -1,0 +1,339 @@
+\section{Why Web3 Needs ZK} \label{sec:web3-needs-zk}
+
+Blockchain is beautiful precisely because it is transparent --- but that same transparency can be turned against you.
+
+In 2022, Tornado Cash was placed on the US government's sanctions list. If your address had interacted with it in any transaction, exchanges could freeze your assets. Worse, someone could \emph{send} you a transaction through Tornado Cash and get your address blacklisted without your consent. Once your address is linked to your real identity, every trade, transfer, and incoming payment becomes traceable. Dirty money from hacks could be sent to you on purpose.
+
+This is why on-chain privacy matters --- not to hide wrongdoing, but to protect ordinary users from targeted attacks, surveillance, and financial coercion.
+
+\subsection*{Bitcoin Privacy Practices}
+
+Bitcoin has no built-in privacy layer, but the community has developed a set of good practices over the years. I believe these can be replicated straightforwardly on Cardano and are worth stating clearly:
+
+\begin{itemize}
+  \item \textbf{Never reuse an address.} Bitcoin and Cardano both support deriving unlimited addresses from a single seed. Each payment should receive a fresh address.
+  \item \textbf{Avoid round-number amounts and self-change.} Sending exactly 1 BTC and returning change to yourself are fingerprints that chain analytics tools look for.
+  \item \textbf{Use multiple inputs and outputs.} A transaction that mixes several UTxOs from different addresses and fans out to several recipients is harder to trace than a one-to-one transfer.
+  \item \textbf{Isolate KYC funds.} If you received ADA from a KYC exchange, keep that UTxO entirely separate from addresses you want to keep private. Mixing them collapses your privacy instantly.
+\end{itemize}
+
+These practices reduce linkability but cannot eliminate it. For stronger guarantees you need a cryptographic construction --- which is where ZK enters the picture.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Zcash} \label{sec:zcash}
+
+Zcash gained mainstream attention during the Silk Road era: because Silk Road was a black market where participants needed payment privacy, a coin with strong cryptographic guarantees was attractive. Unfortunately the listing of Zcash was front-run by the US government's take-down and arrest of Ross Ulbricht, the founder of Silk Road, before Zcash could see widespread use there. Ross spent ten years in prison; the last US president promised to pardon him during the campaign and ultimately did --- he is now a free man.
+
+\begin{center}
+  \includegraphics[width=0.7\linewidth]{freross.png}
+\end{center}
+
+\begin{remark}
+The story of Ross Ulbricht is a reminder that financial privacy and personal freedom are deeply connected. Regardless of your view of Silk Road, the case set important legal precedents about online speech, sentencing, and the use of blockchain evidence.
+\end{remark}
+
+\subsection*{How Zcash Works}
+
+Zcash uses \textbf{zk-SNARKs} (specifically the Groth16 construction) to enable shielded transactions. Every transaction on Zcash involves two possible address types:
+
+\begin{itemize}
+  \item \textbf{Transparent addresses} (t-addresses) --- behave like Bitcoin addresses; all amounts and addresses are public.
+  \item \textbf{Shielded addresses} (z-addresses) --- balances and transaction details are hidden behind a ZK proof.
+\end{itemize}
+
+When you send ZEC from one shielded address to another, the transaction contains a proof that:
+
+\begin{enumerate}
+  \item You own a note (a UTXO) with sufficient value.
+  \item The total value in equals the total value out (no inflation).
+  \item You are not double-spending.
+\end{enumerate}
+
+The verifier (the entire network) checks only the proof. Amounts, sender, and receiver remain invisible. The construction relies on a \textbf{trusted setup ceremony} --- a multi-party computation that generates the public parameters. If every participant in the ceremony destroys their toxic waste, the parameters are safe. Zcash ran the Sapling ceremony in 2018 with hundreds of participants.
+
+\begin{highlight}
+\textbf{Zcash in one sentence:} a proof that your transaction is valid, without revealing who you are, how much you sent, or who received it.
+\end{highlight}
+
+The main criticism of Zcash historically has been low adoption of shielded addresses. Most ZEC on exchanges sits in transparent addresses, which undermines the anonymity set. Shielded usage has grown since the Sapling upgrade, but full privacy still requires both sender and receiver to use z-addresses.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Monero} \label{sec:monero}
+
+Monero takes a different philosophical stance from Zcash: \textbf{privacy by default for every transaction}, not opt-in. There are no transparent addresses. Every Monero transaction is private.
+
+Monero achieves this through three complementary mechanisms:
+
+\begin{itemize}
+  \item \textbf{Ring Signatures.} When you spend XMR, your transaction is signed by a ring of $n$ possible signers drawn from the UTXO set. An observer cannot tell which ring member is the true sender.
+  \item \textbf{Stealth Addresses.} Each transaction generates a one-time destination address derived from the recipient's public key. Only the recipient can link it to their wallet.
+  \item \textbf{Confidential Transactions (RingCT / Bulletproofs).} Transaction amounts are hidden using Pedersen commitments. A Bulletproof proves that all amounts are positive and that inputs equal outputs, without revealing the values. Bulletproofs require no trusted setup.
+\end{itemize}
+
+\begin{center}
+  \includegraphics[width=0.85\linewidth]{zcashvsmonero.png}
+\end{center}
+
+\begin{outline}
+\textbf{Zcash vs.\ Monero at a glance:}
+
+\medskip
+\begin{tabular}{lll}
+  \hline
+  & \textbf{Zcash} & \textbf{Monero} \\
+  \hline
+  Privacy model    & Opt-in (shielded)    & Mandatory (always on) \\
+  Proof system     & zk-SNARK (Groth16)   & Bulletproofs (no ZK circuit) \\
+  Trusted setup    & Yes (Sapling)        & No \\
+  Anonymity set    & All shielded UTxOs   & Ring of $n$ UTxOs \\
+  Proof size       & $\sim$200 bytes      & $\sim$2 KB \\
+  \hline
+\end{tabular}
+\end{outline}
+
+Monero's mandatory privacy means every user contributes to the anonymity set, which is a fundamental advantage. The trade-off is that ring signatures scale linearly, and proving range correctness with Bulletproofs is slower than a SNARK verifier.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Other ZK Applications in Web3} \label{sec:other-zk}
+
+ZK proofs have spread far beyond privacy coins. Here are the most important application domains and projects.
+
+\subsection*{Mina Protocol}
+
+Mina describes itself as the world's lightest blockchain. Instead of storing the full chain history, every node stores only a \textbf{constant-size ZK proof} (currently 22 KB) that the entire chain is valid. This proof is recursive: when a new block is produced, the block producer generates a proof that the new state is valid \emph{and} that the previous proof was valid. The chain compresses down to a single proof of everything that ever happened.
+
+This is a stunning result: syncing a Mina node takes seconds regardless of chain age, because you only verify one proof.
+
+\subsection*{Aztec}
+
+Aztec is a privacy-first ZK rollup on Ethereum. Its \textbf{Noir} language lets developers write circuits in a high-level, Rust-like syntax. Aztec's architecture separates:
+
+\begin{itemize}
+  \item \textbf{Private functions} --- executed entirely client-side, producing ZK proofs, with no on-chain trace.
+  \item \textbf{Public functions} --- executed by the sequencer, visible on-chain.
+\end{itemize}
+
+Applications on Aztec can mix both: a private transfer function hides the sender and amount, while a public function updates a visible registry. Noir compiles to ACIR (Abstract Circuit Intermediate Representation), which multiple backends can prove.
+
+\subsection*{Polygon zkEVM}
+
+Polygon zkEVM is a ZK rollup that is \textbf{EVM-equivalent}: Ethereum smart contracts and tooling work without modification. Every batch of transactions is accompanied by a zk-SNARK proof that the EVM state transition was correct. The L1 Ethereum contract verifies the proof in a single transaction, achieving Ethereum-level security with dramatically lower gas costs per operation.
+
+\subsection*{StarkNet}
+
+StarkNet uses \textbf{zk-STARKs} (no trusted setup, post-quantum secure) and its own language, Cairo, which compiles to a provable virtual machine. STARKs produce larger proofs than SNARKs but scale better for very large computations and avoid the trusted-setup risk entirely.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Midnight} \label{sec:midnight}
+
+Midnight is a \textbf{data-protection blockchain} developed by Input Output Global (IOG) as a partner chain to Cardano. Its goal is to let developers build applications that can \emph{selectively disclose} information while keeping everything else private, using zero-knowledge proofs as the underlying engine.
+
+\subsection*{What Midnight Enables}
+
+\begin{itemize}
+  \item \textbf{Private Trading.} Decentralized exchanges where order size and execution timing remain hidden from the public ledger.
+  \item \textbf{Confidential DeFi.} Private lending, portfolio management, and liquidity pools where balances are shielded.
+  \item \textbf{Compliant Identity (ZK-KYC).} Prove that you are over 18, or that you are an accredited investor, without revealing your passport or income documents to every counterparty.
+  \item \textbf{Shielded and Unshielded Tokens.} Developers can create tokens that keep balances private by default, or public when the application requires it.
+  \item \textbf{Compact Smart Contracts.} Midnight uses a TypeScript-based language for writing privacy-preserving applications, keeping the developer experience accessible.
+\end{itemize}
+
+\subsection*{How Midnight Infrastructure Works}
+
+Running on Midnight requires two services working together:
+
+\begin{itemize}
+  \item \textbf{Node} --- connects to the Midnight network, participates in consensus, and submits transactions.
+  \item \textbf{Indexer} --- reads data from the node and exposes it through a \textbf{GraphQL API}.
+\end{itemize}
+
+\begin{remark}
+The biggest architectural difference from Cardano's REST-based APIs is that the Midnight indexer speaks \textbf{GraphQL}. Instead of hitting specific endpoints, you write a query describing exactly what you want, and the API returns only that data. This means fewer round trips and more flexibility, but requires a different mental model if you are used to REST.
+\end{remark}
+
+Blockfrost hosts both the node and indexer as a managed service across three environments:
+
+\begin{center}
+\begin{tabular}{ll}
+  \hline
+  \textbf{Environment} & \textbf{Use} \\
+  \hline
+  Mainnet  & Production \\
+  Preview  & Testing \\
+  Preprod  & Testing \\
+  \hline
+\end{tabular}
+\end{center}
+
+The three service endpoints for Mainnet are:
+
+\begin{center}
+\begin{tabular}{ll}
+  \hline
+  \textbf{Service}   & \textbf{Endpoint} \\
+  \hline
+  Indexer API  & \texttt{https://midnight-mainnet.blockfrost.io/api/v0/} \\
+  WebSocket    & \texttt{wss://midnight-mainnet.blockfrost.io/api/v0/ws} \\
+  Node RPC     & \texttt{https://rpc.midnight-mainnet.blockfrost.io} \\
+  \hline
+\end{tabular}
+\end{center}
+
+The Indexer API handles queries for blocks, transactions, contracts, and wallet events. The WebSocket supports real-time subscriptions for block streaming, contract actions, and ledger events. The Node RPC provides direct JSON-RPC access for wallet providers and transaction submission.
+
+\subsection*{Authentication}
+
+There are two ways to authenticate with Blockfrost's Midnight endpoints:
+
+\begin{itemize}
+  \item \textbf{Header:} pass your API key as \texttt{project\_id} in the request header (same as Cardano).
+  \item \textbf{Query parameter:} append \texttt{?project\_id=YOUR\_PROJECT\_ID} to the URL --- useful for clients that cannot set custom headers, including Midnight.js itself.
+\end{itemize}
+
+When configuring Midnight.js to use Blockfrost, pass the full URL with the project ID embedded:
+
+\begin{verbatim}
+https://midnight-mainnet.blockfrost.io/api/v0/?project_id=YOUR_PROJECT_ID
+\end{verbatim}
+
+\subsection*{Getting Started with Midnight.js}
+
+Midnight.js is the official SDK for building on Midnight. It handles contract deployment, private state management, ZK proof generation, and transaction submission.
+
+\paragraph{Prerequisites.}
+
+\begin{itemize}
+  \item Node.js 22.x or higher
+  \item Docker (required to run the local proof server)
+  \item A Blockfrost account with a Midnight project (free tier available)
+\end{itemize}
+
+\paragraph{Installation.}
+
+Install the full SDK barrel package:
+
+\begin{verbatim}
+npm install @midnight-ntwrk/midnight-js
+\end{verbatim}
+
+Or install individual packages if you only need specific capabilities:
+
+\begin{verbatim}
+npm install @midnight-ntwrk/midnight-js-types
+npm install @midnight-ntwrk/midnight-js-contracts
+npm install @midnight-ntwrk/midnight-js-network-id
+\end{verbatim}
+
+\paragraph{Step 1 --- Set the network.}
+
+Before any operation, configure which network you are targeting:
+
+\begin{verbatim}
+import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+
+setNetworkId('preprod'); // or 'mainnet', 'preview'
+\end{verbatim}
+
+\paragraph{Step 2 --- Configure providers.}
+
+Midnight.js uses a modular provider model. Each provider handles one concern:
+
+\begin{verbatim}
+import { levelPrivateStateProvider }
+  from '@midnight-ntwrk/midnight-js-level-private-state-provider';
+import { indexerPublicDataProvider }
+  from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
+import { FetchZkConfigProvider }
+  from '@midnight-ntwrk/midnight-js-fetch-zk-config-provider';
+import { httpClientProofProvider }
+  from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
+
+const blockfrostUrl =
+  'https://midnight-preprod.blockfrost.io/api/v0'
+  + '?project_id=YOUR_PROJECT_ID';
+
+const providers = {
+  // Encrypted local storage for your private state
+  privateStateProvider: levelPrivateStateProvider({
+    storePath: './my-private-state'
+  }),
+  // GraphQL queries to the Midnight indexer
+  publicDataProvider: indexerPublicDataProvider(blockfrostUrl),
+  // Fetches ZK artifacts (prover keys, verifier keys)
+  zkConfigProvider: new FetchZkConfigProvider('/zk-artifacts'),
+  // Sends circuits to the proof server for proving
+  proofProvider: httpClientProofProvider('http://localhost:6300')
+};
+\end{verbatim}
+
+The proof server runs locally in Docker. It receives your circuit inputs and returns a ZK proof that can be attached to a transaction. Your private inputs never leave your machine.
+
+\paragraph{Step 3 --- Deploy a contract.}
+
+\begin{verbatim}
+import { deployContract }
+  from '@midnight-ntwrk/midnight-js-contracts';
+import { compiledContract } from './your-contract';
+
+const deployed = await deployContract(providers, {
+  compiledContract,
+  privateStateId: 'my-state',
+  initialPrivateState: { counter: 0n }
+});
+
+console.log('Contract deployed at:', deployed.deployTxData.contractAddress);
+\end{verbatim}
+
+\paragraph{Step 4 --- Call a circuit (private transaction).}
+
+\begin{verbatim}
+import { findDeployedContract }
+  from '@midnight-ntwrk/midnight-js-contracts';
+
+const contract = await findDeployedContract(providers, {
+  contractAddress: deployed.deployTxData.contractAddress,
+  compiledContract,
+  privateStateId: 'my-state'
+});
+
+// Calling a circuit generates a ZK proof locally,
+// then submits the transaction to the network.
+const tx = await contract.callTx.increment();
+await tx.wait();
+\end{verbatim>}
+
+\paragraph{Step 5 --- Query state.}
+
+\begin{verbatim}
+import { getPublicStates }
+  from '@midnight-ntwrk/midnight-js-contracts';
+
+const states = await getPublicStates(providers, contractAddress);
+console.log('Current public state:', states);
+\end{verbatim}
+
+\subsection*{Key Concepts to Understand}
+
+\begin{itemize}
+  \item \textbf{Circuits} --- the functions you write in Compact (Midnight's language) that run locally and generate ZK proofs. Think of them as the private business logic.
+  \item \textbf{Private state} --- data stored on your device, encrypted with AES-256-GCM via LevelDB. It never appears on the blockchain.
+  \item \textbf{Ledger state} --- the public on-chain state of a contract. Anyone can read it; nobody can fake it.
+  \item \textbf{ZK artifacts} --- files produced by the Compact compiler: prover keys, verifier keys, and the ZKIR (Zero-Knowledge Intermediate Representation). These are loaded at runtime.
+  \item \textbf{Transaction flow} --- local execution of the circuit $\to$ proof generation by the proof server $\to$ balancing dust token fees $\to$ broadcast to the network.
+\end{itemize}
+
+\subsection*{Creating a Blockfrost Account}
+
+If you already have a Blockfrost account, Midnight support is included at no extra cost --- just create a new project and select Midnight Mainnet. If you are new:
+
+\begin{enumerate}
+  \item Sign up at \texttt{https://blockfrost.io} (free tier: 50,000 requests per day, no credit card required).
+  \item Click \textbf{Add Project} and select \textbf{Midnight Mainnet}.
+  \item Copy your API key and use it in the URL as shown above.
+\end{enumerate}
+
+\begin{highlight}
+Midnight requests share your existing Blockfrost rate limit. The GraphQL API also enforces per-query limits on depth, number of fields, complexity, and execution timeout. Requests that exceed these limits return an error describing which limit was hit.
+\end{highlight}
+
+For full SDK documentation see \texttt{docs.midnight.network/sdks/official/midnight-js} and for the Blockfrost-specific configuration see \texttt{docs.blockfrost.io/midnight/}.

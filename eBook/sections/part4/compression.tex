@@ -1,0 +1,159 @@
+\section{ZK for Data Minimisation and Proof Compression} \label{sec:compression}
+
+A point that is not stressed nearly enough: \textbf{ZK is not only about privacy}. In physics, light behaves as both a particle and a wave depending on how you observe it. ZK has a similarly dual nature --- it can hide information, but it can also \emph{compress} it. These two properties are completely independent, and in practice the compression use case is arguably more economically important today.
+
+\subsection*{The Core Idea}
+
+Suppose an L2 network processes 100,000 transactions in one hour. Each transaction has a sender, a receiver, an amount, and a signature. If you posted all of that data to L1, you would overwhelm it and pay enormous fees.
+
+The ZK alternative: the L2 executes all 100,000 transactions off-chain, then generates a single \textbf{ZK proof} attesting that every transaction was correctly signed by the legitimate owner of each wallet. The L1 smart contract verifies only the proof --- a task that costs a fixed amount of gas regardless of how many transactions are bundled inside.
+
+\begin{highlight}
+\textbf{100,000 L2 transactions $\longrightarrow$ one ZK proof on L1.}\\
+The proof is a few kilobytes. The data it certifies could be gigabytes.
+\end{highlight}
+
+This is called a \textbf{ZK Rollup}. Nobody can lie about what happened: if the proof verifies, the state transition is correct. The blockchain does not need to see the individual transactions at all.
+
+\subsection*{Why This Matters for Cardano}
+
+Consider a Cardano DEX. Today, every order executes on-chain: the validator checks amounts, validates prices, and enforces invariants for each UTxO --- consuming script budget per order. With ZK the flow becomes:
+
+\begin{enumerate}
+  \item The DEX batches many orders off-chain.
+  \item It generates a ZK proof that all orders were correctly matched and all balances balance.
+  \item A single on-chain transaction carries only the proof and the net state changes.
+\end{enumerate}
+
+The on-chain validator verifies the proof. It does not re-execute the matching logic. This is orders of magnitude cheaper per order and allows throughput that would be impossible otherwise.
+
+\subsection*{The Cost: Proof Generation Time}
+
+ZK proofs are not free to generate. The off-chain prover must run the circuit --- which is an arithmetic encoding of your computation --- over the full witness data. For large circuits this can take seconds to minutes on consumer hardware.
+
+This is the fundamental trade-off of ZK compression: \emph{the prover pays a large upfront computational cost so that the verifier pays almost nothing}. In a rollup setting the prover is a well-resourced sequencer, so the cost is amortised across all the transactions it bundles. For a single-user proof the user's device bears the cost.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Succinctness and Scalability} \label{sec:succinctness}
+
+The ``S'' in zk-SNARK stands for \textbf{Succinct}. A succinct proof has two properties:
+
+\begin{itemize}
+  \item \textbf{Small size.} A Groth16 proof is $\sim$200 bytes regardless of the size of the computation it certifies. A PLONK proof is a few hundred bytes. A STARK proof is larger ($\sim$50--200 KB) but still bounded.
+  \item \textbf{Fast verification.} Verifying a proof takes milliseconds and a fixed amount of compute --- again, regardless of the underlying computation size.
+\end{itemize}
+
+This asymmetry is what makes ZK interesting for blockchains. The blockchain is a slow, expensive, globally-replicated computer. You want to put as little work on it as possible. Succinctness lets you offload arbitrarily large computations and pay only a constant verification cost on-chain.
+
+\subsection*{Recursive Proofs and Proof Aggregation}
+
+The compression story gets even more powerful with \textbf{recursive proofs}: a proof that another proof is valid. If you can verify a ZK proof inside a ZK circuit, you can build a tree of proofs:
+
+\begin{itemize}
+  \item Each leaf proves a batch of transactions.
+  \item Each internal node proves that its two children proofs are valid.
+  \item The root is a single proof attesting to the entire tree.
+\end{itemize}
+
+This is how Mina compresses its entire blockchain history into 22 KB, and how recursive SNARKs like Nova allow continuous proof accumulation with near-zero overhead per step. The on-chain verifier always sees only one proof, regardless of how deep the tree is.
+
+\subsection*{Scalability in Practice}
+
+\begin{center}
+\begin{tabular}{lll}
+  \hline
+  \textbf{Approach}     & \textbf{Throughput} & \textbf{Security} \\
+  \hline
+  Pure L1               & Limited by block size & Native L1 security \\
+  Optimistic Rollup     & $10\times$--$100\times$ & L1 security + fraud proof delay \\
+  ZK Rollup             & $100\times$--$1000\times$ & L1 security + immediate finality \\
+  Recursive ZK          & Near unlimited batching & Same as ZK Rollup \\
+  \hline
+\end{tabular}
+\end{center}
+
+ZK Rollups have an important advantage over Optimistic Rollups: there is \textbf{no challenge window}. An Optimistic Rollup has to wait days before a withdrawal is final, to give time for fraud proofs. A ZK Rollup is final as soon as the proof verifies --- typically within minutes of the batch being posted.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Privacy by Design: Applications and Limitations} \label{sec:privacy-by-design}
+
+Building with privacy is genuinely hard --- not mathematically, but in terms of user experience.
+
+When you build a standard DApp, you can see everything about your user: their balance, their history, their open positions. You can use this data to personalise the interface, warn them about risks, guide them through deposit flows, and show them relevant information. The transparency of the blockchain is, paradoxically, a \emph{UX feature} for most applications.
+
+The moment you introduce privacy, that transparency disappears. You can no longer read the user's balance. You cannot verify their eligibility client-side without the user handing you a proof. The interface has to work without the information it used to take for granted.
+
+\subsection*{Tornado Cash as an Academic Case Study}
+
+\begin{remark}
+This book does not promote or endorse the use of Tornado Cash or any sanctioned platform. The following is a purely technical and UX analysis for educational purposes.
+\end{remark}
+
+Tornado Cash is the clearest example of where ZK privacy meets UX friction. The flow for a user was:
+
+\begin{enumerate}
+  \item Deposit funds into the contract. Receive a \textbf{note} --- a file containing a cryptographic secret that proves ownership of the deposit.
+  \item Store the note securely (it is the only way to redeem; lose it and the funds are gone).
+  \item Later, from a different address with no connection to the original, present the note and a ZK proof that you know the secret. The contract releases the funds to a fresh address.
+\end{enumerate}
+
+The cryptography is elegant. The UX is a disaster for non-technical users. Downloading a file, storing it safely, transferring it across devices, and then running a separate withdrawal flow is completely alien to anyone who has not used a command-line wallet.
+
+The cypherpunk community loves this kind of design --- you are in full control, you hold your own keys and notes, nobody can censor you. But if the target audience is mass adoption, this is a hard wall. Most users will make a mistake, lose the note, or panic and try to contact support that does not exist.
+
+\subsection*{Designing Private Interfaces}
+
+The lesson is not that privacy and good UX are incompatible --- it is that building private applications requires re-thinking the interface from scratch rather than bolting ZK onto an existing transparent design. Some strategies that help:
+
+\begin{itemize}
+  \item \textbf{Wallet-managed private state.} Instead of the user handling notes manually, the wallet generates and stores them automatically. Midnight's architecture does exactly this: private state lives encrypted in your local wallet, and the SDK manages proof generation behind the scenes.
+  \item \textbf{Progressive disclosure.} Show the user only what they need to see at each step. The complexity of ZK proofs is an implementation detail --- it does not belong in the UI.
+  \item \textbf{Sensible defaults.} Make the private path the default rather than opt-in. Monero's design (always private) achieves better anonymity sets than Zcash's (opt-in) precisely because users do not have to make a choice.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{The Trade-offs: Performance vs.\ Privacy} \label{sec:tradeoffs}
+
+Introducing ZK privacy fundamentally changes the computational model of your application, and it is worth being explicit about where the costs land.
+
+\subsection*{Off-Chain Computation}
+
+Ethereum popularised an on-chain computation model: all logic executes on the network, results are public and globally verifiable, and the node is the source of truth. Privacy with ZK inverts this: \textbf{all meaningful computation happens off-chain}, and the on-chain component verifies only a proof that the computation was done correctly.
+
+This shift has real consequences:
+
+\begin{itemize}
+  \item \textbf{User devices bear the proving cost.} Generating a ZK proof can take seconds to minutes on a mobile device. This is improving rapidly with hardware acceleration and more efficient proof systems, but it is not free.
+  \item \textbf{Application logic must be expressed as a circuit.} Not all computations are equally easy to express in arithmetic circuit form. Division, conditionals, and floating-point operations all require careful encoding. Languages like Noir, Circom, and Compact (Midnight) exist to make this easier, but there is still a learning curve.
+  \item \textbf{Debugging is harder.} When a proof fails to verify, the error is usually a constraint violation deep inside the circuit --- not a friendly stack trace. Tooling is improving but lags behind standard development environments.
+\end{itemize}
+
+\subsection*{Trusting a Proving Server}
+
+One workaround for slow on-device proving is to offload it to a \textbf{centralised proof server}. The user sends their inputs to the server, the server generates the proof, and returns it. This is faster, but it introduces a critical trust assumption: you are now telling a third party the very information you are trying to keep private.
+
+\begin{highlight}
+\textbf{The rule:} if the proving happens on a server you do not control, and that server can see your private inputs, then you do not have ZK privacy --- you have \emph{server-side secrecy}, which is a much weaker guarantee.
+\end{highlight}
+
+The correct architecture is to run the proof server locally. Midnight does this via a local Docker container: your private inputs go to a process on your own machine and never leave it. The tradeoff is that the user must run Docker, which is again a UX challenge.
+
+\subsection*{Summary of Trade-offs}
+
+\begin{center}
+\begin{tabular}{lll}
+  \hline
+  \textbf{Choice}            & \textbf{Benefit}                & \textbf{Cost} \\
+  \hline
+  On-device proving          & True privacy                    & Slow, hardware-dependent \\
+  Centralised proof server   & Fast, seamless UX               & Privacy broken (trust the server) \\
+  ZK for compression only    & Scalability, no UX friction     & Complexity, proving time \\
+  Always-on privacy (Monero) & Large anonymity set             & No opt-out, regulatory friction \\
+  Opt-in privacy (Zcash)     & Regulatory flexibility          & Small anonymity set \\
+  \hline
+\end{tabular}
+\end{center}
+
+\bigskip
+
+That is enough theory. From the next chapter onwards we will stop talking about ZK and start \emph{building} it: our first ZK smart contract on Cardano using Plutus.
