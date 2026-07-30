@@ -1,0 +1,236 @@
+% Project Close-out Report: ZK from Zero on Cardano (Catalyst Fund 14, #1400129)
+% Build:  lualatex close-out-report.tex
+% Output: close-out-report.pdf
+
+\documentclass[10pt,a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage[margin=1.7cm,top=1.6cm,bottom=1.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage[most]{tcolorbox}
+\usepackage{hyperref}
+
+\definecolor{accent}{HTML}{1D44A4}
+\definecolor{soft}{HTML}{F4F6FB}
+\definecolor{muted}{HTML}{555F73}
+
+\hypersetup{
+  colorlinks=true, urlcolor=accent, breaklinks=true,
+  pdftitle={Close-out Report: ZK from Zero on Cardano},
+  pdfauthor={Raul Rosa (elRaulito)},
+  pdfsubject={Catalyst Fund 14, Project 1400129}
+}
+
+\titleformat{\section}{\large\bfseries\color{accent}}{}{0pt}{}
+\titlespacing*{\section}{0pt}{0.8em}{0.25em}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.35em}
+\renewcommand{\arraystretch}{1.12}
+\setlist[itemize]{leftmargin=1.1em, topsep=2pt, itemsep=1pt, parsep=0pt}
+\pagestyle{empty}
+
+\newtcolorbox{keybox}{
+  colback=soft, colframe=accent, boxrule=1.2pt, arc=0pt, outer arc=0pt,
+  left=6pt, right=6pt, top=4pt, bottom=4pt
+}
+
+\newcommand{\repolink}{https://github.com/elRaulito/ZK-from-zero-on-Cardano}
+\newcommand{\proplink}{https://projectcatalyst.io/funds/14/cardano-open-ecosystem/zk-from-zero-on-cardano-ebook-by-elraulito}
+
+\begin{document}
+
+{\color{accent}\rule{\textwidth}{2pt}}
+
+\vspace{0.3em}
+{\LARGE\bfseries Project Close-out Report}\\[0.15em]
+{\large\color{muted} ZK from Zero on Cardano: eBook}\\[0.2em]
+{\small Catalyst Fund 14 \textbullet\ Cardano Open: Ecosystem \textbullet\
+Project \#1400129 \textbullet\ Raul Rosa (elRaulito) \textbullet\ 60,000 ADA
+\textbullet\ 8 months \textbullet\ AFL-3.0}
+
+{\color{accent}\rule{\textwidth}{0.8pt}}
+
+\begin{keybox}
+\textbf{Close-out video:} \href{https://youtu.be/FS40K_45CWQ}{youtu.be/FS40K\_45CWQ} \hfill
+\textbf{Repository:} \href{\repolink}{github.com/elRaulito/ZK-from-zero-on-Cardano}
+
+\textbf{Proposal:} \href{\proplink}{projectcatalyst.io/funds/14/cardano-open-ecosystem/zk-from-zero-on-cardano-ebook-by-elraulito}
+\end{keybox}
+
+%---------------------------------------------------------------------------
+\section{What Was Delivered}
+
+A free, open-source, 107-page technical book taking a developer from the
+mathematics of zero-knowledge proofs to a working, tested ZK smart contract on
+Cardano, plus a runnable reference implementation. Nine chapters and a
+sitography of the whole ZK-on-Cardano landscape. Built reproducibly in LaTeX via
+Nix and GitHub Actions, in light and dark themes.
+
+\vspace{-0.2em}
+\begin{itemize}
+  \item \textbf{Book:} \texttt{eBook/light.pdf} and \texttt{eBook/dark.pdf}, 107
+        pages each, published to the \texttt{rendered} branch on every push.
+  \item \textbf{Reference implementation:} \texttt{zk-password/}, a
+        password-locked UTxO unlocked by a Groth16 proof. Circom circuits,
+        snarkjs trusted setup, point compression, Aiken verifier and validator,
+        15 passing tests, on-chain cost benchmarks.
+\end{itemize}
+
+%---------------------------------------------------------------------------
+\section{KPIs and Milestones}
+
+\begin{minipage}[t]{0.46\textwidth}
+\begin{tabular}{@{}l c l@{}}
+\toprule
+\textbf{Project KPI} & \textbf{Target} & \textbf{Status} \\
+\midrule
+Chapters written            & 9      & Complete \\
+Working ZK contract         & 1      & Complete \\
+Circom circuits             & 1+     & Complete (2) \\
+Off-chain pipeline docs     & Yes    & Complete \\
+Advanced ZK case study      & 1      & Complete \\
+Reproducible build          & Yes    & Complete \\
+Open-source licence         & Yes    & Complete \\
+Milestone reports           & 4      & Complete \\
+Close-out report + video    & 1 each & Complete \\
+\bottomrule
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.50\textwidth}
+\begin{tabular}{@{}l l c@{}}
+\toprule
+\textbf{Milestone} & \textbf{Content} & \textbf{Done} \\
+\midrule
+M1 & Ch.\ 1--2: foundations, history   & Yes \\
+M2 & Ch.\ 3--4: applications, privacy  & Yes \\
+M3 & Ch.\ 5--7: contract, off-chain    & Yes \\
+M4 & Ch.\ 8--9: case study, ethics     & Yes \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.5em}
+{\footnotesize All challenge KPIs met: educational material, lowered barrier to
+entry, reusable open-source artifacts, original technical findings, and free
+permissionless access.}
+\end{minipage}
+
+%---------------------------------------------------------------------------
+\section{Key Achievements: Measured, Not Asserted}
+
+The project's most valuable output is a set of numbers nobody had published.
+All are reproducible with \texttt{aiken check -m bench} in \texttt{zk-password/}.
+
+\begin{tabularx}{\textwidth}{@{}l r X@{}}
+\toprule
+\textbf{Finding} & \textbf{Value} & \textbf{Why it matters} \\
+\midrule
+Compiled Groth16 verifier       & 570 bytes                   & The on-chain part is tiny \\
+Cost to verify a proof          & 2,005,373,690 steps         & $\approx$ 0.147 ADA, 20\% of the CPU budget \\
+\dots\ and that cost is         & constant                    & Independent of circuit size \\
+Max verifications per tx        & 4                           & Hard ceiling, CPU-bound \\
+Cost floor per Plutus operation & $\approx 2\times10^5$ steps & Interpreter overhead, not operand width \\
+On-chain Poseidon vs blake2b    & $\approx$ 1,500$\times$     & No optimisation escapes the floor \\
+Depth-20 Poseidon Merkle insert & 120\% / 173\%               & Of CPU / memory budget: does not fit \\
+\bottomrule
+\end{tabularx}
+
+\begin{keybox}
+\textbf{Headline conclusion.} Cardano can verify a zero-knowledge proof about
+any computation, of any size, for about 0.147 ADA and 570 bytes of on-chain
+code. It cannot yet maintain the kind of cryptographic state the most ambitious
+ZK applications need, because it lacks a ZK-friendly hash builtin and the eUTxO
+ledger deliberately has no shared mutable state. \textbf{A single Poseidon
+builtin is the highest-leverage fix available.}
+\end{keybox}
+
+Chapter 8 applies this to a Tornado Cash design and reaches a clearly argued
+negative result, identifying three walls: no ZK-friendly hash builtin; a
+hash-function dilemma where the on-chain-cheap hash forces server-side proving
+and therefore destroys the privacy; and eUTxO contention, where a pool's
+anonymity set is capped by its throughput of one deposit per block. It also
+documents where eUTxO beats Ethereum: minting a token named after the nullifier
+hash makes double-spend prevention a ledger invariant, not a script check.
+
+%---------------------------------------------------------------------------
+\section{Key Learnings}
+
+\begin{itemize}
+  \item \textbf{The on-chain part is the small part.} A ZK application on
+        Cardano is an off-chain application with a 570-byte on-chain referee.
+        Off-chain logic needed a full chapter, not the half we budgeted.
+  \item \textbf{Cardano's ZK cost profile is bimodal, not graded.} Cryptography
+        with a builtin is nearly free; cryptography without one is effectively
+        unavailable. No amount of careful Aiken bridges that gap.
+  \item \textbf{Measuring changed our conclusions.} The original outline assumed
+        ``too expensive, roughly.'' Measurement located the cost in interpreter
+        overhead rather than bignum width, which rules out whole classes of
+        proposed optimisation. Budget time for measurement, not only exposition.
+  \item \textbf{Negative results are worth publishing.} Documenting why
+        something cannot be built, with numbers, saves other teams weeks.
+\end{itemize}
+
+%---------------------------------------------------------------------------
+\section{Next Steps}
+
+\begin{itemize}
+  \item Add replay protection to the reference contract: a nonce in the datum
+        and the circuit's public inputs. An afternoon's work, left as a reader
+        exercise.
+  \item Implement Poseidon in Aiken and publish real measurements, replacing our
+        labelled lower-bound extrapolations with data.
+  \item Argue for a Poseidon builtin using these numbers, published under
+        AFL-3.0 precisely so they can be reused in a CIP or governance thread.
+  \item Build with off-chain computation compression: constant verification cost
+        means an arbitrarily large computation verifies for $\approx$ 0.147 ADA,
+        with none of Chapter 8's walls. The best effort-to-value ratio available
+        on Cardano today, and badly underexploited.
+\end{itemize}
+
+The repository stays open for issues and pull requests. Corrections are more
+welcome than praise, and the Chapter 8 estimates in particular deserve to be
+replaced by someone's real implementation.
+
+%---------------------------------------------------------------------------
+\section{Links}
+
+\begin{minipage}[t]{0.47\textwidth}
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+\toprule
+\multicolumn{2}{@{}l}{\textbf{This project}} \\
+\midrule
+Close-out video & \href{https://youtu.be/FS40K_45CWQ}{youtu.be/FS40K\_45CWQ} \\
+Repository      & \href{\repolink}{elRaulito/ZK-from-zero-on-Cardano} \\
+Proposal        & \href{\proplink}{Catalyst Fund 14, \#1400129} \\
+Benchmarks      & \texttt{aiken check -m bench} \\
+Author          & \href{https://www.raul.it/}{raul.it} \\
+\bottomrule
+\end{tabularx}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.49\textwidth}
+\begin{tabularx}{\linewidth}{@{}l X@{}}
+\toprule
+\multicolumn{2}{@{}l}{\textbf{Prior work credited in the book}} \\
+\midrule
+Janus Wallet     & \href{https://github.com/leobel/janus-wallet}{leobel/janus-wallet} \\
+aiken-zk (Eryx)  & \href{https://github.com/eryxcoop/cardano-zk-aiken}{eryxcoop/cardano-zk-aiken} \\
+Groth16 in Aiken & \href{https://github.com/Modulo-P/ak-381}{Modulo-P/ak-381} \\
+Semaphore port   & \href{https://github.com/Modulo-P/Cardano-Semaphore}{Modulo-P/Cardano-Semaphore} \\
+BLS12-381 gym    & \href{https://github.com/cardano-foundation/bls}{cardano-foundation/bls} \\
+\bottomrule
+\end{tabularx}
+\end{minipage}
+
+\vspace{0.4em}
+{\footnotesize Written by Raul Rosa (\href{https://www.raul.it/}{elRaulito}).
+Reviewed with \href{https://claude.com/claude-code}{Claude Code}. Typeset in
+LuaLaTeX. Released under AFL-3.0.}
+
+\vspace{0.3em}
+{\color{accent}\rule{\textwidth}{2pt}}
+
+\end{document}
