@@ -110,7 +110,7 @@ Community contributions are welcome via GitHub pull requests.
 | Web3 & Use Cases | Month 4 | Chapters 3-4: real-world applications | Done |
 | ZK on Cardano | Month 6 | Chapters 5-7: on-chain implementation | Done |
 | Final Chapter | Month 8 | Chapters 8-9: advanced topics and ethics | Done |
-| Close-out | Month 8 | [Report](docs/close-out-report.md) + [video](https://youtu.be/FS40K_45CWQ?is=ghFRD01mewreEUtB) | Done |
+| Close-out | Month 8 | [Report](https://github.com/elRaulito/ZK-from-zero-on-Cardano/blob/main/close-out-report.pdf) + [video](https://youtu.be/FS40K_45CWQ?is=ghFRD01mewreEUtB) | Done |
 
 ---
 
@@ -139,7 +139,7 @@ zk-password/
 ## Links
 
 - **Catalyst proposal:** https://projectcatalyst.io/funds/14/cardano-open-ecosystem/zk-from-zero-on-cardano-ebook-by-elraulito
-- **Close-out report:** [report]()
+- **Close-out report:** [report PDF](https://github.com/elRaulito/ZK-from-zero-on-Cardano/blob/main/close-out-report.pdf)
 - **Author:** https://www.raul.it/
 - **Twitter/X:** [@elRaulito](https://twitter.com/elRaulito)
 - **Closeout Video** https://youtu.be/FS40K_45CWQ?is=ghFRD01mewreEUtB
