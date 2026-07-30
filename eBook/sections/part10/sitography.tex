@@ -1,0 +1,305 @@
+% Sitography: every link in one place, clickable.
+% Verified July 2026. Links rot; the repository issue tracker is the place to
+% report a dead one.
+
+%--------------------------------------------------------------------------
+\section{How to Use This Chapter} \label{sec:sito-how}
+
+Every project, tool, specification and paper referenced in this book is
+collected here with a clickable link. If you are reading the PDF, the titles
+are live: click them.
+
+The list is deliberately opinionated. Where two resources cover the same
+ground, the more useful one is listed and the other is not. Where a project is
+promising but not yet usable, that is stated.
+
+\begin{remark}
+Links rot. This sitography was verified in July 2026. The canonical, updatable
+version lives in the repository, and a dead link is a legitimate issue to
+open:
+\href{https://github.com/elRaulito/ZK-from-zero-on-Cardano}{github.com/elRaulito/ZK-from-zero-on-Cardano}
+\end{remark}
+
+%--------------------------------------------------------------------------
+\section{This Book} \label{sec:sito-book}
+
+\begin{description}
+  \item[\href{https://github.com/elRaulito/ZK-from-zero-on-Cardano}{ZK from Zero on Cardano}]
+    The repository. LaTeX source, the \texttt{zk-password} reference
+    implementation, the benchmarks behind Chapter~\ref{ch:tornado}, and the
+    rendered PDFs on the \texttt{rendered} branch.
+
+  \item[\href{https://projectcatalyst.io/funds/14/cardano-open-ecosystem/zk-from-zero-on-cardano-ebook-by-elraulito}{Catalyst proposal (Fund 14, \#1400129)}]
+    The original proposal, milestone reports, and close-out documentation.
+
+  \item[\href{https://www.raul.it/}{raul.it}]
+    The author.
+\end{description}
+
+%--------------------------------------------------------------------------
+\section{Cardano ZK Projects} \label{sec:sito-cardano-zk}
+
+This is the complete set of open-source ZK work on Cardano known to the author
+at the time of writing. It is short enough to read in a week. That is either
+intimidating or an opportunity.
+
+\subsection*{Applications}
+
+\begin{description}
+  \item[\href{https://github.com/leobel/janus-wallet}{Janus Wallet}]
+    The most complete open-source ZK application on Cardano. A wallet where
+    the user authenticates with a password rather than a seed phrase, proving
+    knowledge of it via a Groth16 circuit. Circom, Poseidon, BLS12-381, Aiken
+    validators, and a Node.js proving service. \textbf{Read the circuit and
+    the validators together}; it is the best available worked example of how a
+    real ZK product is assembled. Discussed in
+    Chapters~\ref{ch:circuits}, \ref{ch:password} and~\ref{ch:offchain}.
+
+  \item[\href{https://github.com/Modulo-P/Cardano-Semaphore}{Cardano-Semaphore}]
+    A port of Semaphore, the anonymous-signalling and group-membership
+    protocol, by Modulo-P. Semaphore has the same Merkle-tree-plus-nullifier
+    shape as the mixer analysed in Chapter~\ref{ch:tornado}, which makes this
+    the project to watch for progress on the on-chain accumulator problem.
+
+  \item[\href{https://midnight.network/}{Midnight}]
+    Cardano's ZK partner chain. Dual-ledger architecture separating public
+    from private data, with selective disclosure as a first-class feature.
+    Federated mainnet launched March 2026. Cardano's institutional answer to
+    the applications Chapter~\ref{ch:tornado} shows the L1 cannot host.
+\end{description}
+
+\subsection*{Libraries and Tooling}
+
+\begin{description}
+  \item[\href{https://github.com/eryxcoop/cardano-zk-aiken}{aiken-zk (Eryx)}]
+    A language extension and CLI that generates the Circom circuit, the Aiken
+    verifier, and even the MeshJS redeemer from an \texttt{offchain}
+    annotation in your validator. Catalyst Fund 13. The most promising
+    developer-experience work in the space. Note the honest caveat on its
+    Merkle tree hash, discussed in Section~\ref{sec:ch7-aikenzk}.
+
+  \item[\href{https://github.com/Modulo-P/ak-381}{ak-381 (Modulo-P)}]
+    A reusable Aiken implementation of a Groth16 verifier over BLS12-381. If
+    you would rather import a verifier than write the one in
+    Chapter~\ref{ch:password}, start here.
+
+  \item[\href{https://github.com/cardano-foundation/bls}{cardano-foundation/bls}]
+    A "gym" of BLS12-381 examples in Aiken, from the Cardano Foundation. The
+    place to look for primitive-level patterns.
+
+  \item[\href{https://github.com/jmagan/poseidon-bls12381}{poseidon-bls12381}]
+    A TypeScript Poseidon implementation targeting BLS12-381. Useful
+    off-chain, and a solution to the \texttt{circomlibjs} field-mismatch trap
+    described in Section~\ref{sec:ch7-provers}.
+\end{description}
+
+\subsection*{Background Reading}
+
+\begin{description}
+  \item[\href{https://cardanofoundation.org/blog/aiken-primitives-explained}{Aiken's BLS12-381 Primitives Explained}]
+    Cardano Foundation walkthrough of what the pairing builtins make possible.
+
+  \item[\href{https://iohk.io/en/blog/posts/2024/02/12/unlocking-more-opportunities-with-plutus-v3/}{Unlocking More Opportunities with Plutus V3}]
+    The IOG post introducing the primitives this entire book depends on.
+\end{description}
+
+%--------------------------------------------------------------------------
+\section{Circuits and Proving} \label{sec:sito-circuits}
+
+\begin{description}
+  \item[\href{https://docs.circom.io/}{Circom documentation}]
+    The circuit language. Start with \emph{Getting Started}, then the
+    \emph{Circom Language} reference. Remember
+    \texttt{-{}-prime bls12381}.
+
+  \item[\href{https://github.com/iden3/circomlib}{circomlib}]
+    The primitive circuit library: Poseidon, comparators, bit decomposition,
+    Merkle proofs. Read \texttt{poseidon.circom} against the round counts in
+    Section~\ref{sec:ch8-wall1}.
+
+  \item[\href{https://github.com/iden3/snarkjs}{snarkjs}]
+    Trusted setup, proving, and verification. The reference implementation and
+    the one this book uses throughout.
+
+  \item[\href{https://github.com/iden3/rapidsnark}{rapidsnark}]
+    A C++ prover, 5 to 10 times faster than snarkjs, reading the same
+    \texttt{.zkey} files. Check its BLS12-381 support before committing.
+
+  \item[\href{https://github.com/arkworks-rs/circom-compat}{ark-circom}]
+    Drive Circom circuits from Rust via arkworks. First-class BLS12-381
+    support.
+
+  \item[\href{https://github.com/Consensys/gnark}{gnark}]
+    A Go proving library with its own circuit DSL. No Cardano verifier, but
+    good for understanding proving systems from the inside.
+
+  \item[\href{https://noir-lang.org/}{Noir}]
+    A far nicer ZK language than Circom. Listed so you know it exists and know
+    why this book does not use it: its backends have no Aiken verifier.
+\end{description}
+
+%--------------------------------------------------------------------------
+\section{Cardano Development} \label{sec:sito-cardano-dev}
+
+\begin{description}
+  \item[\href{https://aiken-lang.org/}{Aiken}]
+    The on-chain language. The
+    \href{https://aiken-lang.github.io/stdlib/}{standard library} docs are
+    where the \texttt{bls12\_381} modules live, and reading the
+    \texttt{scalar} source explains a great deal about why
+    Chapter~\ref{ch:tornado} reaches the conclusion it does.
+
+  \item[\href{https://meshjs.dev/}{MeshJS}]
+    The TypeScript SDK used for the transactions in
+    Chapter~\ref{ch:offchain}. See
+    \href{https://meshjs.dev/apis/txbuilder/smart-contracts}{Smart Contract Interactions}
+    for the \texttt{MeshTxBuilder} patterns.
+
+  \item[\href{https://github.com/no-witness-labs/lucid-evolution}{Lucid Evolution / Evolution SDK}]
+    The main alternative to MeshJS. Same job, different ergonomics. Originally
+    from Anastasia Labs, now maintained by No Witness Labs and being renamed to
+    Evolution SDK, so expect the package names to move.
+
+  \item[\href{https://blockfrost.io/}{Blockfrost}]
+    Hosted chain API. Free tier is sufficient for everything in this book.
+
+  \item[\href{https://www.koios.rest/}{Koios}]
+    A public, no-key-required Cardano API. The live protocol parameters quoted
+    in Chapters~\ref{ch:offchain} and~\ref{ch:tornado} came from here.
+
+  \item[\href{https://gomaestro.org/}{Maestro}]
+    Another provider, with indexing features useful once you outgrow simple
+    UTxO queries.
+
+  \item[\href{https://cardanoscan.io/}{Cardanoscan}] and
+    \href{https://cexplorer.io/}{cexplorer}\textbf{.}
+    Explorers. Useful for inspecting datums and script execution units on a
+    submitted transaction.
+
+  \item[\href{https://docs.cardano.org/about-cardano/explore-more/parameter-guide}{Protocol parameters guide}]
+    What each parameter means. For live \emph{values}, query Koios or a node.
+\end{description}
+
+%--------------------------------------------------------------------------
+\section{Cardano Improvement Proposals} \label{sec:sito-cips}
+
+How cryptographic primitives actually arrive on Cardano. Chapter
+\ref{ch:future} argues that a Poseidon builtin belongs on this list and is not
+yet on it.
+
+\begin{description}
+  \item[\href{https://cips.cardano.org/cip/CIP-0381}{CIP-381}]
+    The BLS12-381 primitives themselves. The foundation of every ZK contract
+    on Cardano today.
+
+  \item[\href{https://cips.cardano.org/cip/CIP-0101}{CIP-101}]
+    Keccak-256, which enables Ethereum signature verification in scripts.
+
+  \item[\href{https://cips.cardano.org/cip/CIP-0109}{CIP-109}]
+    \texttt{modularExponentiation}, and with it on-chain modular inverses.
+    Still at \emph{Proposed} status. The most directly relevant open proposal
+    to the cost floor measured in Section~\ref{sec:ch8-wall1}.
+
+  \item[\href{https://cips.cardano.org/cip/CIP-0127}{CIP-127}]
+    RIPEMD-160.
+
+  \item[\href{https://github.com/cardano-foundation/CIPs}{The CIP repository}]
+    Where to propose one, and where to read the discussion on proposals that
+    have not landed.
+\end{description}
+
+%--------------------------------------------------------------------------
+\section{Papers and Foundations} \label{sec:sito-papers}
+
+The two worth reading in full rather than in summary are marked.
+
+\begin{description}
+  \item[\href{https://dl.acm.org/doi/10.1145/22145.22178}{Goldwasser, Micali, Rackoff (1985)}]
+    \emph{The Knowledge Complexity of Interactive Proof Systems.} The paper
+    that defines what a zero-knowledge proof \emph{is}.
+    \textbf{Read this one in full.}
+
+  \item[\href{https://eprint.iacr.org/2016/260}{Groth (2016)}]
+    \emph{On the Size of Pairing-Based Non-interactive Arguments.} The
+    construction whose verification equation we implemented in
+    Chapter~\ref{ch:password}. \textbf{Read this one too.}
+
+  \item[\href{https://eprint.iacr.org/2019/458}{Grassi et al.\ (2019)}]
+    \emph{Poseidon: A New Hash Function for Zero-Knowledge Proof Systems.}
+    The round structure costed in Section~\ref{sec:ch8-wall1}.
+
+  \item[\href{https://eprint.iacr.org/2019/953}{Gabizon, Williamson, Ciobotaru (2019)}]
+    \emph{PLONK.} The universal-setup construction that Chapter
+    \ref{ch:future} argues Cardano should eventually support.
+
+  \item[\href{https://eprint.iacr.org/2018/046}{Ben-Sasson et al.\ (2018)}]
+    \emph{Scalable, Transparent, and Post-quantum Secure Computational
+    Integrity.} STARKs. Relevant to the speculative research direction in
+    Section~\ref{sec:ch9-missing}.
+
+  \item[\href{https://zkproof.org/}{ZKProof}]
+    Standards work, plus a curated reading path into the wider literature.
+
+  \item[\href{https://zcash.github.io/halo2/}{The Halo2 Book}]
+    For understanding what a no-trusted-setup proving system requires of its
+    verifier.
+\end{description}
+
+%--------------------------------------------------------------------------
+\section{Reference Implementations Worth Reading} \label{sec:sito-reference}
+
+Not Cardano projects, but the canonical implementations of the ideas this book
+discusses. Reading them is how you learn what a mature ZK codebase looks like.
+
+\begin{description}
+  \item[\href{https://github.com/tornadocash/tornado-core}{tornado-core}]
+    The original mixer contracts and circuits reverse-engineered in
+    Chapter~\ref{ch:tornado}. Listed for study. As that chapter sets out at
+    length, the protocol was sanctioned in 2022 and this book does not
+    recommend deploying anything derived from it.
+
+  \item[\href{https://github.com/semaphore-protocol/semaphore}{Semaphore}]
+    Anonymous signalling on Ethereum, and the upstream of Cardano-Semaphore.
+    A cleaner introduction to Merkle-tree-plus-nullifier design than Tornado.
+
+  \item[\href{https://github.com/zcash/zcash}{Zcash}]
+    The first large-scale zk-SNARK deployment, discussed in
+    Chapter~\ref{ch:web3}.
+
+  \item[\href{https://github.com/MinaProtocol/mina}{Mina}]
+    Recursive proof composition taken to its logical conclusion: a whole
+    blockchain compressed into one constant-size proof.
+\end{description}
+
+%--------------------------------------------------------------------------
+\section{Where to Ask} \label{sec:sito-community}
+
+\begin{description}
+  \item[\href{https://discord.gg/aiken}{Aiken Discord}]
+    The most useful place for Aiken and on-chain questions, including the
+    BLS12-381 builtins.
+
+  \item[\href{https://forum.cardano.org/}{Cardano Forum}]
+    Longer-form technical discussion. The \emph{Smart Contracts} category is
+    where execution-unit questions get answered.
+
+  \item[\href{https://cardano.stackexchange.com/}{Cardano Stack Exchange}]
+    Best for specific, answerable questions.
+
+  \item[\href{https://t.me/CardanoDevelopersOfficial}{Cardano Developers (Telegram)}]
+    Fast, informal, good for unblocking.
+
+  \item[\href{https://zkhack.dev/}{ZK Hack}]
+    Not Cardano-specific, and the best community for questions about the
+    cryptography itself: study groups, puzzle challenges, and talks. The
+    \href{https://zeroknowledge.fm/}{Zero Knowledge podcast} is the single
+    best way to keep up with the field.
+\end{description}
+
+\begin{highlight}
+If you build something with this book, the most useful thing you can do is
+write down what broke. The failure tables in Chapter~\ref{ch:offchain} and the
+measurements in Chapter~\ref{ch:tornado} exist because the problems were
+documented rather than merely worked around. This sitography is short. Help
+make it longer.
+\end{highlight}

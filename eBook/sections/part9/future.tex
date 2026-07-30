@@ -1,0 +1,481 @@
+% Chapter 9: Final Thoughts and Future Directions.
+
+%--------------------------------------------------------------------------
+\section{Where We Started, Where We Are} \label{sec:ch9-arc}
+
+This book began with a cave, a magic door, and Ali Baba. It ends with execution
+unit measurements. That arc is deliberate: zero-knowledge proofs are one of the
+few areas of computer science where the elegant intuition and the engineering
+reality are separated by a very long distance, and a book that stops at the
+intuition leaves you unable to build anything.
+
+Along the way we established, by construction and measurement rather than
+assertion:
+
+\begin{itemize}
+  \item A complete Groth16 verifier compiles to \textbf{570 bytes} of Plutus
+        Core (Chapter~\ref{ch:offchain}).
+  \item Verifying a proof costs \textbf{2{,}005{,}373{,}690 CPU steps} and
+        \textbf{34{,}219 memory units}, 20\% of a transaction's CPU budget,
+        about \textbf{0.147 ADA}, and that figure is \textbf{constant in the
+        size of the circuit}.
+  \item The cost floor for any elementary operation inside a Plutus script is
+        roughly \textbf{$2\times10^5$ CPU steps} and \textbf{600 memory units},
+        driven by interpreter overhead rather than operand width
+        (Chapter~\ref{ch:tornado}).
+  \item Those two facts together explain almost everything about what is and is
+        not possible.
+\end{itemize}
+
+\begin{highlight}
+\textbf{Cardano is very good at verifying zero-knowledge proofs and very bad at
+computing anything ZK-adjacent on-chain.} Every conclusion in this chapter is a
+corollary of that asymmetry.
+\end{highlight}
+
+%--------------------------------------------------------------------------
+\section{The Central Asymmetry} \label{sec:ch9-asymmetry}
+
+It is worth spelling out why the asymmetry exists, because it is not an accident
+or an oversight.
+
+Cardano's BLS12-381 support is implemented as \textbf{builtins}: single Plutus
+Core operations backed by optimised native code, with a fixed price in the cost
+model. The miller-loop builtin does an enormous amount of arithmetic and is
+charged as one operation. That is why a pairing check is cheap.
+
+Field arithmetic, by contrast, has no builtin. Aiken's \texttt{Scalar} is
+ordinary Aiken code over ordinary integers, and every multiply-and-reduce is
+several reduction steps in the CEK machine, each individually metered. That is
+why $1{,}413$ field operations (one Poseidon hash) cost three hundred times
+more than four pairings.
+
+\begin{center}
+\begin{tabular}{lrr}
+  \hline
+  \textbf{Operation} & \textbf{CPU steps} & \textbf{Implementation} \\
+  \hline
+  4 pairings + 5 decompressions (Groth16) & 2{,}005{,}373{,}690 & builtins \\
+  1 Poseidon hash ($t=3$, estimated)      &   600{,}802{,}860 & Aiken code \\
+  1 \texttt{blake2b\_256}                 &       398{,}720 & builtin \\
+  1 field multiply-and-reduce             &       430{,}929 & Aiken code \\
+  1 small integer addition                &       197{,}240 & Aiken code \\
+  \hline
+\end{tabular}
+\end{center}
+
+Read that table as a design principle rather than a benchmark. \textbf{On
+Cardano, cryptography that has been given a builtin is nearly free, and
+cryptography that has not been given a builtin is effectively unavailable.}
+There is no middle ground, because the interpreter overhead per operation is
+enormous relative to the arithmetic it performs. Optimising your Aiken does not
+help; the only thing that helps is a builtin.
+
+This also explains why the incremental protocol-parameter increases do not
+change the picture. The transaction memory budget has gone from 11{,}250{,}000
+to 14{,}000{,}000 to the current 16{,}500{,}000, about 47\% in total. A
+depth-20 on-chain Poseidon insertion needs roughly 17 times the current budget.
+Parameter governance moves in tens of percent; the gap is in orders of
+magnitude.
+
+%--------------------------------------------------------------------------
+\section{The Missing Primitives} \label{sec:ch9-missing}
+
+If builtins are the only lever, the natural question is which ones are missing.
+In rough order of impact:
+
+\subsection*{1. A ZK-Friendly Hash Builtin (Poseidon or Poseidon2)}
+
+This is the single highest-leverage change available to Cardano's ZK ecosystem,
+and Chapter~\ref{ch:tornado} quantified why. A Poseidon builtin would:
+
+\begin{itemize}
+  \item make on-chain Merkle tree maintenance cost roughly what
+        \texttt{blake2b\_256} costs today, a factor of $\approx 1{,}500$
+        improvement;
+  \item keep circuits at $\approx 240$ constraints per tree level instead of
+        $\approx 30{,}000$, which keeps proving keys in megabytes and proving in
+        the browser;
+  \item and therefore let a whole class of accumulator-based applications run
+        with client-side proving and real privacy: private voting, anonymous
+        credentials, membership sets, shielded pools.
+\end{itemize}
+
+\begin{highlight}
+One builtin removes two of the three walls in Chapter~\ref{ch:tornado}. If you
+have influence over Cardano's roadmap and you care about zero-knowledge, this is
+the thing to argue for. Ethereum is having the same debate about Poseidon for
+the same reasons.
+\end{highlight}
+
+Note the appropriate caution: Poseidon is young by cryptographic standards, and
+arithmetisation-friendly hashes have a shorter cryptanalytic track record than
+SHA-2 or Keccak. Committing it to the ledger's cost model is a long-term
+commitment. Poseidon2 and its successors exist partly because the design space
+is still moving. This is a real argument for care, not for inaction.
+
+\subsection*{2. Native Field Arithmetic}
+
+CIP-109 proposes \texttt{modularExponentiation}, which computes modular powers
+and (via negative exponents) multiplicative inverses. The CIP's own
+motivation notes that computing an inverse currently consumes between 5\% and
+9\% of the mainnet CPU budget. It remains at \emph{Proposed} status.
+
+That single builtin would help, but the broader need is a family of scalar field
+operations priced as builtins. That is what would remove the
+$2\times10^5$-steps-per-operation floor and, with it, the reason a PLONK verifier
+is impractical.
+
+\subsection*{3. A Second Proving System}
+
+Today Groth16 is the only fully supported option, and it comes with a
+circuit-specific trusted setup. The alternatives and their obstacles:
+
+\begin{center}
+\begin{tabular}{lp{7.4cm}}
+  \hline
+  \textbf{System} & \textbf{Status on Cardano} \\
+  \hline
+  \textbf{Groth16}
+    & Works today. Constant 2.0B CPU verification, 192-byte proofs. One
+      ceremony per circuit. \\
+  \addlinespace
+  \textbf{PLONK}
+    & One universal, updatable ceremony for all circuits, a decisive
+      advantage for any application family. Verifier needs polynomial
+      commitment openings and substantial field arithmetic, which is exactly
+      what Cardano prices badly. No production Aiken implementation. \\
+  \addlinespace
+  \textbf{Halo2}
+    & No trusted setup at all, and recursion-friendly. Verifier is heavier
+      still. Not viable today. \\
+  \addlinespace
+  \textbf{STARKs}
+    & No trusted setup, hash-based rather than pairing-based. Verification is
+      thousands of hash invocations, which Cardano \emph{does} have builtins
+      for, making this less obviously hopeless than it first appears, though
+      proof sizes strain the 16{,}384-byte transaction limit. \\
+  \hline
+\end{tabular}
+\end{center}
+
+\begin{remark}
+The STARK row deserves a second look from anyone hunting for a research project.
+Cardano's cost profile (cheap builtin hashes, ruinously expensive field
+arithmetic) is close to the opposite of what a pairing-based verifier wants
+and closer to what a FRI-based verifier wants. The binding constraint moves from
+execution units to transaction size. Whether a Cardano-suitable STARK verifier
+is possible is, as far as I know, an open and unexplored question.
+\end{remark}
+
+%--------------------------------------------------------------------------
+\section{The Ecosystem, Honestly Assessed} \label{sec:ch9-ecosystem}
+
+Cardano's ZK ecosystem in 2026 is small, real, and roughly five years behind
+Ethereum's. Pretending otherwise does newcomers no favours; so does pretending
+it is empty.
+
+\begin{center}
+\begin{tabular}{p{3.6cm}p{8.4cm}}
+  \hline
+  \textbf{Project} & \textbf{What it is} \\
+  \hline
+  \textbf{Janus Wallet}
+    & The most complete open-source ZK application on Cardano. Password
+      authentication via Groth16 with no seed phrase. Server-side proving,
+      Poseidon, BLS12-381, Aiken validators. The reference for how a real ZK
+      product is assembled. \\
+  \addlinespace
+  \textbf{aiken-zk} (Eryx)
+    & Language extension and CLI that generates circuits, verifiers, and
+      MeshJS redeemers from \texttt{offchain} annotations. Catalyst Fund 13.
+      The most promising developer-experience work in the space, and its
+      mocked Merkle hash is an honest signpost to the platform's real gap. \\
+  \addlinespace
+  \textbf{Modulo-P} (\texttt{ak-381}, Cardano-Semaphore)
+    & A reusable Aiken Groth16 verifier and a port of Semaphore, the
+      anonymous-signalling protocol. Semaphore is the same
+      Merkle-tree-plus-nullifier shape as Chapter~\ref{ch:tornado}, which makes
+      it the natural place to watch for progress on the accumulator problem. \\
+  \addlinespace
+  \textbf{cardano-foundation/bls}
+    & A "gym" of BLS12-381 examples in Aiken, from the Foundation. Where to
+      look for primitive-level patterns. \\
+  \addlinespace
+  \textbf{Midnight}
+    & Cardano's ZK partner chain. Federated mainnet launched March 2026.
+      Dual-ledger architecture, selective disclosure, separate token model. \\
+  \hline
+\end{tabular}
+\end{center}
+
+Two observations. First, almost every project on that list uses Groth16 over
+BLS12-381 with Circom and snarkjs, which is why this book taught that stack: it
+is not one option among many, it is the ecosystem. Second, the list is short
+enough that a competent developer can read all of it in a week, which is
+either intimidating or an opportunity, depending on temperament.
+
+%--------------------------------------------------------------------------
+\section{What Actually Works Today} \label{sec:ch9-works}
+
+Chapter~\ref{ch:tornado} was a catalogue of failure, so let us be precise about
+the complement. The test is the one from Section~\ref{sec:ch8-verdict}: does the
+proof concern data the chain already holds, or state the chain must maintain?
+
+\subsection*{Authentication and Access Control}
+
+Prove knowledge of a credential without revealing it. The commitment sits in a
+datum; the validator reads it. This is Chapter~\ref{ch:password}, and Janus
+Wallet is the production version. \textbf{Works today, entirely.}
+
+\subsection*{Off-Chain Computation Compression}
+
+Move an expensive computation off-chain and prove it was performed correctly.
+Because verification is constant at 2.0B CPU steps regardless of circuit size,
+this trade is spectacular: an arbitrarily large computation, verified for 0.147
+ADA. This is precisely what \texttt{aiken-zk}'s \texttt{offchain} blocks are
+for. \textbf{Works today, and is underexploited.}
+
+\begin{highlight}
+If you are looking for a ZK project on Cardano with a favourable
+effort-to-value ratio today, this is it. The constant verification cost means
+the more expensive your computation, the better the trade looks, and no
+accumulator is involved, so none of Chapter~\ref{ch:tornado}'s walls apply.
+\end{highlight}
+
+\subsection*{Selective Disclosure and Attestations}
+
+Prove you are over 18, or resident in a jurisdiction, or accredited, without
+revealing the underlying document. The issuer's public key or credential root
+lives in a datum or a reference input; the chain maintains nothing. \textbf{Works
+today.}
+
+\subsection*{Private Voting with Off-Chain Roll-Up}
+
+Prove membership in an eligible-voter set and cast a vote nobody can link to
+you. This works if the membership root is fixed at the start of the vote:
+published once, then read-only. It hits Chapter~\ref{ch:tornado}'s walls only if
+the register must be updated on-chain during the vote. \textbf{Works today, with
+that design constraint.}
+
+\subsection*{Cross-Chain and Light-Client Proofs}
+
+Prove that a block header chain or state transition on another chain is valid.
+Verification is one constant-cost check. The interesting nuance is that the
+circuit must implement the \emph{other} chain's hash function, which is usually
+Keccak or SHA-256, expensive in-circuit, exactly the Wall Two trade-off, but
+here there is no on-chain accumulator forcing the issue. \textbf{Works today, at
+the cost of large circuits.}
+
+\subsection*{The Pattern}
+
+\begin{center}
+\begin{tabular}{p{5.6cm}p{6.4cm}}
+  \hline
+  \textbf{Works today} & \textbf{Blocked today} \\
+  \hline
+  Statement about a fixed public value in a datum
+    & Statement about an accumulator the chain must update \\
+  \addlinespace
+  One proof, one transaction, no shared state
+    & Many users contending for one state UTxO \\
+  \addlinespace
+  Root published once, read many times
+    & Root recomputed on-chain per transaction \\
+  \addlinespace
+  Circuit-expensive hashes acceptable
+    & Requires a hash cheap both on-chain and in-circuit \\
+  \hline
+\end{tabular}
+\end{center}
+
+%--------------------------------------------------------------------------
+\section{Layer 2 and the Midnight Answer} \label{sec:ch9-l2}
+
+Cardano's institutional answer to the applications in the right-hand column is
+not to reshape the eUTxO ledger. It is to move them.
+
+\textbf{Hydra} removes contention by moving state into a head with a fixed
+participant set. That is genuinely useful for throughput and useless for
+anonymity (a known participant set is the opposite of an anonymity set), but
+it is a strong fit for ZK applications where the parties are known and the
+\emph{data} is what needs hiding.
+
+\textbf{Midnight} is the more direct answer: a partner chain designed from the
+start for ZK smart contracts, with a dual-ledger architecture separating public
+from private data, and selective disclosure as a first-class feature rather than
+a bolt-on. Its federated mainnet launched in March 2026.
+
+The strategic logic is coherent, and worth understanding rather than merely
+noting. Cardano's L1 optimises for deterministic, locally verifiable, cheaply
+priced validation. Those properties are why the eUTxO model has no shared
+mutable state, and the absence of shared mutable state is exactly Wall Three.
+You cannot have both. So the L1 keeps its guarantees and hosts ZK
+\emph{verification}, and a purpose-built chain hosts ZK \emph{state}.
+
+\begin{remark}
+Be alert to the trade this makes on your behalf. Midnight's selective disclosure
+is a deliberate design position: privacy that can be lifted under defined
+conditions. That is a genuine answer to the regulatory problem that opened
+Chapter~\ref{ch:tornado}, and it is also, unavoidably, weaker than
+unconditional privacy. Whether that is the right trade depends on the
+application and on who you think should hold the key. It is not a technical
+question, and it should not be presented as one.
+\end{remark}
+
+%--------------------------------------------------------------------------
+\section{Ethics, Regulation, and Building Anyway} \label{sec:ch9-ethics}
+
+This book contains a chapter analysing a sanctioned protocol. It seems worth
+being direct about how to think about that.
+
+Zero-knowledge proofs are unusually dual-use. The same construction that lets a
+refugee prove eligibility for aid without revealing their identity lets someone
+launder proceeds of crime. The mathematics does not distinguish. Neither, in the
+Tornado Cash case, did the enforcement action: OFAC sanctioned the smart
+contract addresses themselves, and a developer was prosecuted over software he
+did not control at the time of the conduct at issue. Those actions remain
+contested, and a fuller reckoning belongs to lawyers and courts rather than to
+this book.
+
+What belongs here are three practical positions.
+
+\textbf{Privacy is the default in every other part of life, and its absence on
+public blockchains is an artefact rather than a virtue.} A blockchain where
+every salary payment, medical invoice, and political donation is permanently
+public to everyone is not a neutral design; it is a surveillance system that
+happens to be decentralised. Work on privacy needs no special justification.
+
+\textbf{Threat modelling is part of engineering.} Chapter~\ref{ch:offchain}'s
+point about server-side proving is the concrete form of this: a system marketed
+as zero-knowledge whose prover runs on someone else's server provides no privacy
+against that someone. If you build ZK systems, state clearly what is hidden,
+from whom, and under what assumptions. Users cannot evaluate a claim like "uses
+zero-knowledge proofs".
+
+\textbf{Selective disclosure is a legitimate engineering answer, not a
+capitulation.} Systems where the user can prove specific facts to specific
+counterparties (rather than either revealing everything or nothing) cover
+most real requirements, and are the direction Cardano and Midnight have chosen.
+Absolute anonymity is a narrower need than the discourse suggests.
+
+\begin{highlight}
+The interesting question is not "should privacy exist" but "who holds the
+disclosure key, and under what process". That is a governance question. Building
+systems that make it an explicit, auditable governance question, rather than
+an implicit property of whoever runs the server, is a contribution.
+\end{highlight}
+
+%--------------------------------------------------------------------------
+\section{What to Build Next} \index{next steps} \label{sec:ch9-next}
+
+Concrete suggestions, ordered by ratio of value to difficulty, for anyone who
+finished this book and wants to contribute.
+
+\begin{enumerate}
+  \item \textbf{Add replay protection to the Chapter~\ref{ch:password}
+        contract.} Add a nonce to the datum and the circuit's public inputs,
+        require the continuing output to increment it. This is the single most
+        important missing feature, it is a genuine exercise, and it takes an
+        afternoon.
+
+  \item \textbf{Implement Poseidon in Aiken and publish the measurements.} Yes,
+        it will be too expensive to use; that is the point. Chapter
+        \ref{ch:tornado}'s figures are estimates extrapolated from measured
+        primitives. A real implementation with real numbers would turn them into
+        data, and data is what a builtin proposal needs.
+
+  \item \textbf{Build something using off-chain computation compression.} Take
+        an expensive on-chain computation, move it into a circuit, verify the
+        proof for a constant 0.147 ADA. No accumulator, no contention, no walls.
+        The best available ratio of effort to result on Cardano today.
+
+  \item \textbf{Write the missing tooling.} A library that generates Aiken
+        types and MeshJS encoders from a \texttt{verification\_key.json} would
+        eliminate most of the failure modes in
+        Section~\ref{sec:ch7-failures}. The bugs in this book's tables are
+        encoding bugs, and encoding bugs are what code generation exists to
+        prevent.
+
+  \item \textbf{Investigate a STARK verifier for Aiken.} Speculative and
+        possibly a dead end. Also the one item on this list where Cardano's
+        peculiar cost profile (cheap builtin hashes, expensive field
+        arithmetic) might turn out to be an advantage rather than a handicap.
+
+  \item \textbf{Argue for a Poseidon builtin, with numbers.} The measurements in
+        Chapter~\ref{ch:tornado} exist to be reused. Cardano's governance
+        process responds to concrete cases.
+\end{enumerate}
+
+%--------------------------------------------------------------------------
+\section{Where to Continue} \label{sec:ch9-resources}
+
+\begin{center}
+\begin{tabular}{p{5.1cm}p{6.9cm}}
+  \hline
+  \textbf{Resource} & \textbf{Why} \\
+  \hline
+  \texttt{aiken-lang.org}
+    & Language reference and the \texttt{stdlib} \texttt{bls12\_381} modules.
+      Read the \texttt{scalar} source; it explains a great deal. \\
+  \addlinespace
+  \texttt{docs.circom.io}
+    & The circuit language, and the underlying R1CS model. \\
+  \addlinespace
+  \texttt{github.com/iden3/circomlib}
+    & The primitive library. Read \texttt{poseidon.circom} against
+      Chapter~\ref{ch:tornado}'s round counts. \\
+  \addlinespace
+  \texttt{github.com/leobel/janus-wallet}
+    & A complete ZK product. Read the circuit and the Aiken validators
+      together. \\
+  \addlinespace
+  \texttt{github.com/eryxcoop/cardano-zk-aiken}
+    & Where Cardano's ZK developer experience is being built. \\
+  \addlinespace
+  \texttt{cips.cardano.org}
+    & CIP-101 (keccak256), CIP-109 (modular exponentiation), CIP-127
+      (ripemd-160). How primitives actually arrive. \\
+  \addlinespace
+  \texttt{zkproof.org}
+    & Standards work, and a reading path into the underlying literature. \\
+  \hline
+\end{tabular}
+\end{center}
+
+And the two papers worth reading in full rather than summarised: Goldwasser,
+Micali and Rackoff's 1985 paper for what a zero-knowledge proof \emph{is}, and
+Groth's 2016 paper for the construction whose verification equation we
+implemented in Chapter~\ref{ch:password}.
+
+%--------------------------------------------------------------------------
+\section{Closing} \label{sec:ch9-closing}
+
+This book set out to make zero-knowledge proofs on Cardano buildable rather than
+merely admirable. Nine chapters later, the honest summary is two sentences.
+
+\begin{outline}
+Cardano can verify a zero-knowledge proof about any computation, of any size,
+for about 0.147 ADA and 570 bytes of on-chain code. It cannot yet maintain the
+kind of cryptographic state that the most ambitious ZK applications need, and
+the reason is a missing hash builtin and a ledger model that deliberately has no
+shared mutable state.
+\end{outline}
+
+The first sentence is a remarkable capability that very few developers on
+Cardano are currently using. The second is a real limitation with a known,
+tractable, single-item fix at the top of its list.
+
+Neither sentence was findable in one place when this project started, which is
+why the project existed. Both are now measured, reproducible from the repository,
+and free to reuse.
+
+\begin{highlight}
+Everything in this book (the LaTeX source, the Circom circuits, the Aiken
+validators, the benchmarks, the measurements) is open source under AFL-3.0.
+Corrections are more welcome than praise; the numbers in Chapter
+\ref{ch:tornado} in particular are extrapolations that deserve to be replaced by
+someone's real implementation.
+
+Go build something. Publish what breaks.
+\end{highlight}

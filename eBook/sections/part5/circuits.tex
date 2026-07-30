@@ -3,9 +3,9 @@
 Writing a ZK smart contract on Cardano is not a single-language problem. It involves a chain of tools that each play a different role:
 
 \begin{enumerate}
-  \item \textbf{Circom} --- a domain-specific language for describing arithmetic circuits.
-  \item \textbf{snarkjs} --- a JavaScript library that runs the trusted setup ceremony, compiles witness calculations, and generates / verifies Groth16 proofs.
-  \item \textbf{Aiken} --- the on-chain language where the Cardano validator lives and where the ZK proof is verified against the circuit's public verification key.
+  \item \textbf{Circom}: a domain-specific language for describing arithmetic circuits.
+  \item \textbf{snarkjs}: a JavaScript library that runs the trusted setup ceremony, compiles witness calculations, and generates / verifies Groth16 proofs.
+  \item \textbf{Aiken}: the on-chain language where the Cardano validator lives and where the ZK proof is verified against the circuit's public verification key.
 \end{enumerate}
 
 The high-level flow is:
@@ -18,12 +18,12 @@ The high-level flow is:
 \end{tabular}
 \end{center}
 
-The circuit defines the \emph{rules}. The trusted setup ceremony produces the public parameters that let anyone prove and verify statements about those rules. The proof is generated off-chain by the user. The Aiken validator checks the proof on-chain --- a single, fast pairing check using the BLS12-381 primitives introduced in Plutus V3.
+The circuit defines the \emph{rules}. The trusted setup ceremony produces the public parameters that let anyone prove and verify statements about those rules. The proof is generated off-chain by the user. The Aiken validator checks the proof on-chain, a single, fast pairing check using the BLS12-381 primitives introduced in Plutus V3.
 
-% ─────────────────────────────────────────────────────────────────────────────
+%--------------------------------------------------------------------------
 \section{Writing a Circuit in Circom} \label{sec:circom}
 
-Circom is a language for expressing computations as \textbf{arithmetic circuits} --- networks of addition and multiplication gates over a finite field. Every statement you want to prove must be reducible to a set of polynomial constraints called an \textbf{R1CS} (Rank-1 Constraint System).
+Circom is a language for expressing computations as \textbf{arithmetic circuits}, networks of addition and multiplication gates over a finite field. Every statement you want to prove must be reducible to a set of polynomial constraints called an \textbf{R1CS} (Rank-1 Constraint System).
 
 \subsection*{Installing the Tools}
 
@@ -50,7 +50,7 @@ npm install -D circomlib
 
 \subsection*{The Janus Wallet Authentication Circuit}
 
-Janus Wallet\footnote{\texttt{https://github.com/leobel/janus-wallet}} is the most complete open-source ZK project on Cardano. It uses a circuit that proves a user knows their password without ever sending it on-chain. The circuit is built on the \textbf{Poseidon} hash function --- a ZK-friendly hash designed to be cheap to prove inside arithmetic circuits (unlike SHA-256, which is extremely expensive to circuit-encode).
+Janus Wallet\footnote{\texttt{https://github.com/leobel/janus-wallet}} is the most complete open-source ZK project on Cardano. It uses a circuit that proves a user knows their password without ever sending it on-chain. The circuit is built on the \textbf{Poseidon} hash function, a ZK-friendly hash designed to be cheap to prove inside arithmetic circuits (unlike SHA-256, which is extremely expensive to circuit-encode).
 
 The circuit has five \textbf{public} inputs (visible on-chain) and one \textbf{private} input (the secret that never leaves the user's device):
 
@@ -107,9 +107,9 @@ Run this command from the directory where your \texttt{include} path can reach t
 The flags produce:
 
 \begin{itemize}
-  \item \texttt{circuit.r1cs} --- the constraint system in binary format.
-  \item \texttt{circuit\_js/circuit.wasm} --- WebAssembly witness calculator.
-  \item \texttt{circuit.sym} --- symbol table for debugging.
+  \item \texttt{circuit.r1cs}: the constraint system in binary format.
+  \item \texttt{circuit\_js/circuit.wasm}: WebAssembly witness calculator.
+  \item \texttt{circuit.sym}: symbol table for debugging.
 \end{itemize}
 
 The \texttt{--prime bls12381} flag targets the BLS12-381 curve, which matches Cardano's on-chain primitives.
@@ -131,7 +131,7 @@ For the Janus circuit you should see:
 [INFO] snarkJS: # of Outputs: 0
 \end{verbatim}
 
-% ─────────────────────────────────────────────────────────────────────────────
+%--------------------------------------------------------------------------
 \section{The Trusted Setup Ceremony} \label{sec:trusted-setup}
 
 Groth16 requires a two-phase trusted setup. Phase 1 (Powers of Tau) is circuit-independent and can be reused across projects. Phase 2 is circuit-specific and ties the parameters to your exact R1CS.
@@ -158,7 +158,7 @@ snarkjs powersoftau contribute pot14_0001.ptau pot14_0002.ptau \
     --name="Second contribution" -v -e="some random text"
 \end{verbatim}
 
-The \texttt{-e} flag provides entropy inline, making the step non-interactive --- useful in scripts.
+The \texttt{-e} flag provides entropy inline, making the step non-interactive, useful in scripts.
 
 \paragraph{4. (Optional) Third-party contribution.}
 
@@ -184,7 +184,7 @@ A clean run ends with \texttt{Powers Of tau OK!}
 
 \paragraph{6. Apply a random beacon.}
 
-A random beacon finalises Phase 1. It is a delayed hash function evaluated on a publicly known, high-entropy value --- for example, the hash of a specific Cardano block, or a national lottery result announced after the ceremony began.
+A random beacon finalises Phase 1. It is a delayed hash function evaluated on a publicly known, high-entropy value: for example, the hash of a specific Cardano block, or a national lottery result announced after the ceremony began.
 
 \begin{verbatim}
 snarkjs powersoftau beacon pot14_0003.ptau pot14_beacon.ptau \
@@ -192,7 +192,7 @@ snarkjs powersoftau beacon pot14_0003.ptau pot14_beacon.ptau \
     10 -n="Final Beacon"
 \end{verbatim}
 
-The \texttt{10} argument means $2^{10} = 1024$ iterations of the hash --- enough to make the beacon computationally irreversible.
+The \texttt{10} argument means $2^{10} = 1024$ iterations of the hash, enough to make the beacon computationally irreversible.
 
 \begin{highlight}
 \textbf{Why a random beacon?} If a contributor could predict the beacon before their contribution, they might be able to bias the parameters. An unpredictable, publicly verifiable source of randomness prevents this. Janus Wallet uses the \texttt{policy\_id} under which all account tokens are minted as its beacon value.
@@ -212,7 +212,7 @@ This pre-computes the encrypted Lagrange polynomial evaluations needed in Phase 
 snarkjs powersoftau verify pot14_final.ptau
 \end{verbatim}
 
-Unlike step 5, this run will \emph{not} warn about missing phase 2 values --- that means the file is ready.
+Unlike step 5, this run will \emph{not} warn about missing phase 2 values; that means the file is ready.
 
 \subsection*{Phase 2: Circuit-Specific Setup}
 
@@ -268,7 +268,7 @@ snarkjs zkey export verificationkey circuit_final.zkey verification_key.json
 
 \texttt{verification\_key.json} contains the public parameters that will be embedded in the Aiken smart contract (as an on-chain token) and used to verify every proof.
 
-% ─────────────────────────────────────────────────────────────────────────────
+%--------------------------------------------------------------------------
 \section{Generating and Verifying a Proof} \label{sec:proof-gen}
 
 \subsection*{Prepare Inputs}
@@ -305,8 +305,8 @@ snarkjs groth16 prove circuit_final.zkey witness.wtns proof.json public.json
 
 This produces:
 \begin{itemize}
-  \item \texttt{proof.json} --- the Groth16 proof ($\pi_A$, $\pi_B$, $\pi_C$ elliptic curve points).
-  \item \texttt{public.json} --- the values of the public inputs (visible to the verifier).
+  \item \texttt{proof.json}: the Groth16 proof ($\pi_A$, $\pi_B$, $\pi_C$ elliptic curve points).
+  \item \texttt{public.json}: the values of the public inputs (visible to the verifier).
 \end{itemize}
 
 Or in a single step:
@@ -324,7 +324,7 @@ snarkjs groth16 verify verification_key.json public.json proof.json
 
 Output: \texttt{[INFO] snarkJS: OK!}
 
-% ─────────────────────────────────────────────────────────────────────────────
+%--------------------------------------------------------------------------
 \section{Preparing the Verification Key for Cardano} \label{sec:vk-cardano}
 
 Cardano's BLS12-381 primitives work exclusively with \textbf{compressed} elliptic curve points. The \texttt{verification\_key.json} produced by snarkjs uses \emph{uncompressed} points. Before moving on-chain you must compress all $\mathbb{G}_1$ and $\mathbb{G}_2$ points: \texttt{vk\_alpha\_1}, \texttt{vk\_beta\_2}, \texttt{vk\_gamma\_2}, \texttt{vk\_delta\_2}, and every point in the \texttt{IC} array.
@@ -340,10 +340,10 @@ node --no-warnings --experimental-specifier-resolution=node \
 
 Run this from \texttt{src/zkproof}. The output \texttt{compressed\_verification\_key.json} is what goes on-chain.
 
-% ─────────────────────────────────────────────────────────────────────────────
+%--------------------------------------------------------------------------
 \section{On-Chain Verification in Aiken} \label{sec:aiken-verification}
 
-The verification key is minted as a token on Cardano using Janus Wallet's circuit minting endpoint. This makes the parameters immutable and publicly auditable --- anyone can inspect the token and verify the ceremony.
+The verification key is minted as a token on Cardano using Janus Wallet's circuit minting endpoint. This makes the parameters immutable and publicly auditable; anyone can inspect the token and verify the ceremony.
 
 \subsection*{Minting the Circuit Token}
 
@@ -396,20 +396,20 @@ aiken check -t silent .
 +----------------------------------------- 11 tests | 11 passed | 0 failed
 \end{verbatim}
 
-Notice the CPU budget for \texttt{verify\_zk\_proof}: approximately 2.5 billion units. Groth16 verification on BLS12-381 is one of the most expensive operations you can perform on-chain, but it is within Cardano's per-transaction budget --- which is why Plutus V3 added these primitives in the first place.
+Notice the CPU budget for \texttt{verify\_zk\_proof}: approximately 2.5 billion units. Groth16 verification on BLS12-381 is one of the most expensive operations you can perform on-chain, but it is within Cardano's per-transaction budget, which is why Plutus V3 added these primitives in the first place.
 
-% ─────────────────────────────────────────────────────────────────────────────
+%--------------------------------------------------------------------------
 \section{Janus Wallet: Putting It All Together} \label{sec:janus}
 
-Janus Wallet (\texttt{https://github.com/leobel/janus-wallet}) is the reference implementation of a ZK smart contract wallet on Cardano. Instead of signing transactions with a private key, the user proves knowledge of their password via a Groth16 circuit. The private key never exists --- there is nothing to lose or steal.
+Janus Wallet (\texttt{https://github.com/leobel/janus-wallet}) is the reference implementation of a ZK smart contract wallet on Cardano. Instead of signing transactions with a private key, the user proves knowledge of their password via a Groth16 circuit. The private key never exists; there is nothing to lose or steal.
 
 \subsection*{Architecture}
 
 \begin{itemize}
-  \item \textbf{Circuit} --- the Circom Authenticate template described above.
-  \item \textbf{Off-chain server} --- a Node.js HTTP API that builds, signs (via ZK proof), and submits transactions.
-  \item \textbf{On-chain validator} --- an Aiken smart contract that verifies the Groth16 proof against the circuit token.
-  \item \textbf{PostgreSQL} --- stores user accounts, circuit data, and UTxO state.
+  \item \textbf{Circuit}: the Circom Authenticate template described above.
+  \item \textbf{Off-chain server}: a Node.js HTTP API that builds, signs (via ZK proof), and submits transactions.
+  \item \textbf{On-chain validator}: an Aiken smart contract that verifies the Groth16 proof against the circuit token.
+  \item \textbf{PostgreSQL}: stores user accounts, circuit data, and UTxO state.
 \end{itemize}
 
 \subsection*{Running the Server}
@@ -490,12 +490,12 @@ POST /wallets/{user_id}/withdraw  { "amount": 1234567 }
 \end{verbatim}
 
 \begin{highlight}
-\textbf{The key insight:} from the blockchain's perspective, every Janus transaction is a normal smart contract spend. The only thing that makes it a ZK wallet is the redeemer --- a Groth16 proof that the user knows their password, checked on-chain by the Aiken validator in a single pairing verification.
+\textbf{The key insight:} from the blockchain's perspective, every Janus transaction is a normal smart contract spend. The only thing that makes it a ZK wallet is the redeemer, a Groth16 proof that the user knows their password, checked on-chain by the Aiken validator in a single pairing verification.
 \end{highlight}
 
 \subsection*{Full Test Results}
 
-Janus Wallet ships with 29 Aiken tests covering minting, spending, challenge construction, and ZK verification --- all passing with zero errors:
+Janus Wallet ships with 29 Aiken tests covering minting, spending, challenge construction, and ZK verification; all passing with zero errors:
 
 \begin{verbatim}
 Summary 29 checks, 0 errors, 19 warnings

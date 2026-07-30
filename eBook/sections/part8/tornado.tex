@@ -1,0 +1,780 @@
+% Chapter 8: Tornado Cash on Cardano: A Case Study.
+% Academic analysis only. No deployable implementation is provided.
+
+%--------------------------------------------------------------------------
+\section{Scope and Purpose} \label{sec:ch8-scope}
+
+\begin{highlight}
+\textbf{This chapter is an academic case study.} Its purpose is to take the most
+demanding well-known ZK application and work out, concretely, whether Cardano
+can host it today. The answer turns out to be \emph{no}, and the reasons why
+teach more about the platform's real limits than any working example could.
+
+No deployable implementation is provided. Nothing in this chapter is deployed to
+any network, and no complete circuit or validator set is given. The code
+fragments are design sketches for analysis.
+\end{highlight}
+
+There is a second reason for the disclaimer. Tornado Cash was sanctioned by the
+US Office of Foreign Assets Control in August 2022, and a developer was
+subsequently prosecuted over its operation. Whatever one's view of those
+actions, which were and remain contested, deploying a mixer carries
+legal exposure that has nothing to do with whether the cryptography works. This
+chapter analyses a design. It does not recommend building one.
+
+What we are actually after is the engineering question, which is genuinely
+interesting and has a genuinely surprising answer:
+
+\begin{outline}
+Cardano can verify a zero-knowledge proof for about 0.15 ADA and 20\% of a
+transaction's CPU budget, at a cost that does not depend on the circuit's
+complexity. Why, then, can it not host an application whose on-chain component
+is one proof verification?
+\end{outline}
+
+Because verifying a proof and \emph{maintaining the state the proof is about}
+are completely different problems, and Cardano is excellent at the first and
+poor at the second. This chapter measures exactly how poor.
+
+%--------------------------------------------------------------------------
+\section{What Tornado Cash Actually Does} \label{sec:ch8-what}
+
+Strip away the politics and Tornado Cash is a clean cryptographic construction:
+a \textbf{shielded pool} built from three ingredients.
+
+\subsection*{The Deposit}
+
+A depositor generates two random 248-bit values, a \texttt{nullifier} and a
+\texttt{secret}, and computes a \textbf{commitment}:
+
+\[
+  C = H(\texttt{nullifier}, \texttt{secret})
+\]
+
+They send a fixed amount (1 ETH, or 10, or 100) to the pool contract along
+with $C$. The contract appends $C$ as a leaf to an append-only
+\textbf{incremental Merkle tree} of depth 20 and stores the new root. The pair
+$(\texttt{nullifier}, \texttt{secret})$ is the depositor's \emph{note}; losing it
+loses the funds.
+
+Crucially, the contract does not record who deposited which commitment beyond
+what the transaction itself reveals. The commitment is just a hash.
+
+\subsection*{The Withdrawal}
+
+Later, and ideally much later, the depositor proves in zero knowledge that:
+
+\begin{enumerate}
+  \item they know a $(\texttt{nullifier}, \texttt{secret})$ pair whose
+        commitment $C$ is a leaf of the tree with root $R$, \emph{without
+        revealing which leaf}; and
+  \item the public value $\texttt{nullifierHash} = H(\texttt{nullifier})$
+        is correctly derived from that same nullifier.
+\end{enumerate}
+
+The contract checks the proof, checks that $R$ is a recent known root, checks
+that \texttt{nullifierHash} has not been seen before, records it, and pays the
+denomination to a recipient address supplied as a public input.
+
+\subsection*{Why the Three Pieces Are Each Necessary}
+
+\begin{center}
+\begin{tabular}{lp{7.6cm}}
+  \hline
+  \textbf{Piece} & \textbf{What breaks without it} \\
+  \hline
+  Merkle tree        & No way to prove membership in the deposit set without
+                       naming your deposit; the link is exposed. \\
+  \addlinespace
+  Nullifier          & The same note could be withdrawn repeatedly; the pool is
+                       drained. \\
+  \addlinespace
+  Fixed denomination & Amounts become fingerprints. A deposit and a
+                       withdrawal of 3.7194 ADA are trivially linked. \\
+  \hline
+\end{tabular}
+\end{center}
+
+The anonymity set is the number of deposits in the tree that could plausibly be
+yours. A pool with 3 deposits provides essentially no privacy; Tornado's largest
+pools held tens of thousands. \textbf{Anonymity is a function of pool
+throughput}, and this will matter enormously later.
+
+\subsection*{The Relayer}
+
+There is a bootstrapping problem: to withdraw, you need a transaction, and a
+transaction needs a fee, and a fee needs funds, and if you pay the fee from an
+address linked to your deposit, you have undone the entire construction. Tornado
+solves this with \textbf{relayers}: third parties who submit the withdrawal
+transaction and pay the fee, taking a cut from the withdrawn amount. The relayer
+learns the proof and the recipient but never the note.
+
+%--------------------------------------------------------------------------
+\section{Sketching It in eUTxO} \label{sec:ch8-sketch}
+
+Let us design it for Cardano properly, giving the eUTxO model every advantage,
+before looking for problems.
+
+\subsection*{The Pool State}
+
+Ethereum's contract has mutable storage. Cardano has UTxOs. The natural
+translation is a single \textbf{pool UTxO} carrying the tree state in its datum,
+consumed and recreated by every deposit:
+
+\begin{verbatim}
+pub type PoolDatum {
+  root:       ByteArray,        // current Merkle root
+  next_index: Int,              // number of leaves so far
+  filled:     List<ByteArray>,  // rightmost node per level
+  denom:      Int,              // fixed denomination, lovelace
+}
+\end{verbatim}
+
+The \texttt{filled} list is the standard incremental-Merkle-tree trick: to
+append a leaf and recompute the root you do not need the whole tree, only the
+rightmost filled node at each of the 20 levels, plus a table of precomputed
+"zero" subtree hashes. That is 20 hashes per insertion instead of a million.
+
+\subsection*{The Nullifier Set: Where Cardano Wins}
+
+Ethereum stores spent nullifiers in a \texttt{mapping(bytes32 => bool)}. On
+Cardano, tracking a growing set is normally painful. But there is an unusually
+elegant option here, and it is worth pausing on because it is genuinely better
+than the Ethereum version.
+
+\textbf{Mint a token whose asset name is the nullifier hash.}
+
+The Cardano ledger enforces, as a consensus rule, that a given
+(policy id, asset name) pair with quantity 1 cannot be minted twice under a
+policy that only ever mints one. So the minting policy becomes the
+double-spend check, and it is enforced by the ledger rather than by our script:
+
+\begin{verbatim}
+validator nullifier_policy {
+  mint(redeemer: WithdrawRedeemer, policy_id: PolicyId,
+       tx: Transaction) {
+    expect [Pair(asset_name, 1)] =
+      tx.mint |> assets.tokens(policy_id) |> dict.to_pairs()
+
+    // The minted asset name IS the nullifier hash, so uniqueness
+    // is a ledger invariant, not something we have to check.
+    and {
+      asset_name == redeemer.nullifier_hash,
+      verify_withdraw_proof(redeemer),
+    }
+  }
+}
+\end{verbatim}
+
+\begin{highlight}
+This is a real advantage of the eUTxO model. On Ethereum, double-withdrawal
+prevention costs an \texttt{SSTORE} and depends on the contract being correct.
+On Cardano it costs a token mint and depends on the \emph{ledger} being correct.
+No script bug can permit a double withdrawal.
+\end{highlight}
+
+So far Cardano is doing well. The trouble is elsewhere.
+
+%--------------------------------------------------------------------------
+\section{The Withdrawal Circuit} \label{sec:ch8-circuit}
+
+The circuit is a direct adaptation of Tornado's, with Poseidon in place of the
+original Pedersen/MiMC pair; Poseidon is what circomlib gives us over
+BLS12-381, and it is what Chapter~\ref{ch:password} already used.
+
+\begin{verbatim}
+pragma circom 2.1.6;
+
+include "../node_modules/circomlib/circuits/poseidon.circom";
+include "../node_modules/circomlib/circuits/bitify.circom";
+
+// One level of a Merkle path. `sel` is the path bit: 0 means our
+// node is on the left, 1 means on the right.
+template MerkleLevel() {
+    signal input  cur;
+    signal input  sibling;
+    signal input  sel;
+    signal output out;
+
+    sel * (sel - 1) === 0;   // force sel to be a bit
+
+    signal left;
+    signal right;
+    left  <== cur + sel * (sibling - cur);
+    right <== sibling + sel * (cur - sibling);
+
+    component h = Poseidon(2);
+    h.inputs[0] <== left;
+    h.inputs[1] <== right;
+    out <== h.out;
+}
+
+template Withdraw(levels) {
+    // ---- public inputs (checked by the Aiken validator) ----
+    signal input root;
+    signal input nullifierHash;
+    signal input recipient;  // payment credential hash
+    signal input fee;        // relayer fee in lovelace
+
+    // ---- private witness (never leaves the prover) ----
+    signal input nullifier;
+    signal input secret;
+    signal input pathElements[levels];
+    signal input pathIndices[levels];
+
+    // 1. commitment = Poseidon(nullifier, secret)
+    component commit = Poseidon(2);
+    commit.inputs[0] <== nullifier;
+    commit.inputs[1] <== secret;
+
+    // 2. nullifierHash = Poseidon(nullifier)
+    component nh = Poseidon(1);
+    nh.inputs[0] <== nullifier;
+    nh.out === nullifierHash;
+
+    // 3. the commitment is a leaf under `root`
+    component path[levels];
+    signal cur[levels + 1];
+    cur[0] <== commit.out;
+
+    for (var i = 0; i < levels; i++) {
+        path[i] = MerkleLevel();
+        path[i].cur     <== cur[i];
+        path[i].sibling <== pathElements[i];
+        path[i].sel     <== pathIndices[i];
+        cur[i + 1]      <== path[i].out;
+    }
+
+    cur[levels] === root;
+
+    // 4. Bind recipient and fee into the constraint system so a
+    //    relayer cannot redirect the payment. Squaring is the
+    //    standard Circom idiom for "this signal must be used".
+    signal recipientSq;
+    signal feeSq;
+    recipientSq <== recipient * recipient;
+    feeSq       <== fee * fee;
+}
+
+component main {public [root, nullifierHash, recipient, fee]}
+    = Withdraw(20);
+\end{verbatim}
+
+Two Cardano-specific notes. First, \texttt{recipient} is a payment credential
+hash (28 bytes, 224 bits), which fits comfortably in a 255-bit BLS12-381
+field element, so the address can be a single public input. Second, binding
+\texttt{recipient} and \texttt{fee} into the circuit is the replay protection
+from Section~\ref{sec:ch7-ops}: a stolen proof can only ever pay the original
+recipient.
+
+This circuit is correct. Compiled for BLS12-381 it produces a proof that
+Cardano's builtins can verify in 2.0 billion CPU steps, exactly as in
+Chapter~\ref{ch:password}. \textbf{The withdrawal side of Tornado Cash is not the
+problem.}
+
+%--------------------------------------------------------------------------
+\section{Wall One: There Is No On-Chain Poseidon} \label{sec:ch8-wall1}
+
+The problem is the \emph{deposit}. To append a leaf, the pool validator must
+recompute the Merkle root, and that means computing Poseidon \emph{on-chain},
+in Aiken, 20 times.
+
+Cardano has no Poseidon builtin. The available hash builtins are
+\texttt{sha2\_256}, \texttt{sha3\_256}, \texttt{blake2b\_224},
+\texttt{blake2b\_256}, \texttt{keccak\_256} and \texttt{ripemd\_160}; all
+excellent, none of them ZK-friendly. So Poseidon would have to be written in
+Aiken, from field arithmetic.
+
+\subsection*{What Field Arithmetic Costs, Measured}
+
+Aiken's \texttt{Scalar} type is not a native field element. Looking at the
+stdlib source:
+
+\begin{verbatim}
+pub fn mul(left: Scalar, right: Scalar) -> Scalar {
+  Scalar(left.integer * right.integer % field_prime)
+}
+\end{verbatim}
+
+That is arbitrary-precision integer multiplication followed by a 255-bit
+modulo, interpreted by the Plutus CEK machine. There is no BLS12-381 scalar
+arithmetic builtin. So let us measure it rather than guess.
+
+The benchmark file in the repository,
+\texttt{lib/zk\_password/bench\_onchain.ak}, runs tail-recursive loops of
+1000 iterations with matching \texttt{nop} baselines, so subtracting the
+baseline and dividing by 1000 gives the marginal cost of one operation:
+
+\begin{verbatim}
+aiken check -m bench
+\end{verbatim}
+
+\begin{center}
+\begin{tabular}{lrr}
+  \hline
+  \textbf{Operation} & \textbf{CPU steps} & \textbf{Mem units} \\
+  \hline
+  \texttt{acc + 3} (small ints)          & 197{,}240 & 602 \\
+  \texttt{acc \% p}                      & 250{,}615 & 604 \\
+  \texttt{scalar.add}                    & 417{,}083 & 1{,}009 \\
+  \texttt{scalar.mul}                    & 421{,}644 & 1{,}011 \\
+  raw \texttt{(a + b) \% p}              & 417{,}083 & 1{,}009 \\
+  raw \texttt{a * b \% p}                & 430{,}929 & 1{,}012 \\
+  \hline
+  \texttt{blake2b\_256} (64-byte input)  & 398{,}720 & 813 \\
+  \texttt{sha2\_256} (64-byte input)     & 581{,}923 & 813 \\
+  \hline
+\end{tabular}
+\end{center}
+
+Three things in this table matter more than the headline numbers.
+
+\begin{enumerate}
+  \item \textbf{The \texttt{Scalar} wrapper is not the problem.} Raw
+        \texttt{a * b \% p} on plain integers costs the same as
+        \texttt{scalar.mul}. Bypassing the stdlib buys nothing.
+  \item \textbf{Operand width is not the problem either.} A bare small-integer
+        \texttt{acc + 3} already costs 197{,}240 CPU steps. The 255-bit modular
+        multiply costs only about twice that.
+  \item \textbf{Therefore the cost is the interpreter, not the arithmetic.}
+        Roughly 200{,}000 CPU steps and 600 memory units are the price of
+        \emph{any} elementary operation in a Plutus script. The numbers are
+        dominated by CEK machine overhead per reduction step.
+\end{enumerate}
+
+\begin{highlight}
+This is the most consequential fact in the chapter. Because the cost floor is
+per-\emph{operation} rather than per-\emph{bit}, no optimisation helps.
+Montgomery form, lazy reduction, batched inversion, a hand-tuned UPLC
+implementation; all of them reduce the \emph{width} of the arithmetic, and
+width is not what you are paying for. You are paying about $2 \times 10^5$ CPU
+steps per operation, and Poseidon needs about $1.4 \times 10^3$ of them.
+\end{highlight}
+
+\subsection*{Poseidon, Costed}
+
+Poseidon over BLS12-381 with $t = 3$ (the 2-to-1 compression a binary Merkle
+tree needs) uses circomlib's standard parameters: 8 full rounds and 57 partial
+rounds, with an $x^5$ S-box.
+
+\begin{center}
+\begin{tabular}{lrrr}
+  \hline
+  \textbf{Per round} & \textbf{Mults} & \textbf{Adds} & \textbf{Rounds} \\
+  \hline
+  Full: 3 S-boxes ($3\times$), MDS ($9\times$) & 18 & 9 & 8 \\
+  Partial: 1 S-box ($3\times$), MDS ($9\times$) & 12 & 9 & 57 \\
+  \hline
+  \textbf{Total} & \textbf{828} & \textbf{585} & \\
+  \hline
+\end{tabular}
+\end{center}
+
+At the measured rates:
+
+\[
+  828 \times 430{,}929 \;+\; 585 \times 417{,}083
+  \;=\; 600{,}802{,}860 \text{ CPU steps}
+\]
+\[
+  828 \times 1{,}012 \;+\; 585 \times 1{,}009
+  \;=\; 1{,}428{,}386 \text{ memory units}
+\]
+
+So \textbf{one} on-chain Poseidon compression costs 6.0\% of the transaction CPU
+budget and 8.7\% of the memory budget. About 0.126 ADA per hash.
+
+\subsection*{The Verdict on the Deposit}
+
+A depth-20 insertion needs 20 of them:
+
+\begin{center}
+\begin{tabular}{lrrr}
+  \hline
+  \textbf{Depth-20 Merkle insertion} & \textbf{CPU} & \textbf{Memory} \\
+  \hline
+  Poseidon in Aiken (estimated) & 12{,}016{,}057{,}195 & 28{,}567{,}718 \\
+  Transaction budget            & 10{,}000{,}000{,}000 & 16{,}500{,}000 \\
+  \textbf{Utilisation}          & \textbf{120\%}       & \textbf{173\%} \\
+  \hline
+  \texttt{blake2b\_256} builtin, 20 levels & 7{,}974{,}399 & 16{,}254 \\
+  \textbf{Utilisation}          & \textbf{0.08\%}      & \textbf{0.10\%} \\
+  \hline
+\end{tabular}
+\end{center}
+
+A depth-20 Poseidon insertion exceeds the CPU budget by 20\% and the memory
+budget by 73\%. It does not fit, and it does not nearly fit. Working backwards
+from the memory budget, the deepest tree that fits is \textbf{11 levels}, an
+anonymity set of 2{,}048, consuming essentially the entire transaction
+budget, leaving nothing for the rest of the validator.
+
+The same operation with the \texttt{blake2b\_256} builtin costs 0.08\% of the
+CPU budget. \textbf{Poseidon on-chain is roughly 1{,}500 times more expensive
+than blake2b on CPU and 1{,}750 times on memory.}
+
+\begin{remark}
+The Poseidon figures are estimates built from measured primitives, and they are
+\emph{lower bounds}. They count only field multiplications and additions. A real
+Aiken implementation also pays for traversing the round-constant lists, indexing
+the MDS matrix, and constructing intermediate lists; all at the same
+$\approx 2\times10^5$ steps per operation. The true cost is higher, not lower.
+
+This is also precisely why \texttt{aiken-zk}'s \texttt{merkle\_tree\_checker}
+ships with a mocked hash function and a ``do not use in production'' warning
+(Section~\ref{sec:ch7-aikenzk}). It is not an oversight. There is nothing to
+put there.
+\end{remark}
+
+%--------------------------------------------------------------------------
+\section{Wall Two: The Hash Function Dilemma} \label{sec:ch8-wall2}
+
+The obvious response to Wall One is: use blake2b then. It is a builtin, it is
+1{,}500 times cheaper on-chain, problem solved.
+
+It is not solved, because the hash appears on \emph{both} sides. The Merkle path
+is recomputed on-chain during deposit \emph{and} inside the circuit during
+withdrawal. And the two environments have exactly opposite preferences.
+
+\begin{center}
+\begin{tabular}{lrr}
+  \hline
+  \textbf{Hash (2-to-1)} & \textbf{On-chain (CPU)} & \textbf{In-circuit} \\
+  \hline
+  Poseidon      & 600{,}802{,}860 & $\approx$ 240 constraints \\
+  \texttt{sha2\_256}     & 581{,}923       & $\approx$ 30{,}000 constraints \\
+  \texttt{blake2b\_256}  & 398{,}720       & not in circomlib \\
+  \hline
+\end{tabular}
+\end{center}
+
+\begin{highlight}
+\textbf{The hash functions Cardano computes cheaply are the ones circuits prove
+expensively, and vice versa.} Poseidon is 125 times cheaper in-circuit and
+1{,}500 times more expensive on-chain. There is no hash function that is cheap
+on both sides of a Cardano ZK application today.
+\end{highlight}
+
+\subsection*{Following the SHA-256 Branch Honestly}
+
+Suppose we accept the trade and build the tree with \texttt{sha2\_256}. What
+happens? Something initially encouraging, thanks to a fact established in
+Chapter~\ref{ch:offchain}:
+
+\begin{outline}
+Groth16 verification on Cardano costs 2{,}005{,}373{,}690 CPU steps
+\emph{regardless of the circuit's size}. A 600{,}000-constraint circuit verifies
+for exactly the same price as our 216-constraint password circuit.
+\end{outline}
+
+So on-chain, both sides now fit comfortably:
+
+\begin{center}
+\begin{tabular}{lrr}
+  \hline
+  \textbf{Transaction} & \textbf{CPU used} & \textbf{\% of budget} \\
+  \hline
+  Deposit: 20 $\times$ \texttt{sha2\_256} & 11{,}638{,}458 & 0.12\% \\
+  Withdraw: 1 Groth16 verify + mint       & $\approx$ 2{,}050{,}000{,}000 & 20.5\% \\
+  \hline
+\end{tabular}
+\end{center}
+
+The on-chain problem disappears. The cost has not gone away, though; it has
+moved to the prover, and there it becomes severe:
+
+\begin{center}
+\begin{tabular}{lrr}
+  \hline
+  \textbf{Circuit} & \textbf{Poseidon tree} & \textbf{SHA-256 tree} \\
+  \hline
+  Constraints (depth 20)   & $\approx$ 4{,}800 & $\approx$ 600{,}000 \\
+  Powers of Tau needed     & $2^{13}$          & $2^{20}$ \\
+  Proving key size         & $\approx$ 2\,MB   & multiple GB \\
+  Browser proving          & under a second    & not viable \\
+  \hline
+\end{tabular}
+\end{center}
+
+A 600{,}000-constraint Groth16 circuit needs a $2^{20}$ ceremony, a proving key
+measured in gigabytes, and tens of seconds to minutes of proving on a laptop.
+Nobody is downloading that into a browser tab.
+
+And so the failure closes into a circle. Recall the three prover architectures
+from Section~\ref{sec:ch7-where}. Client-side proving is the only one that
+delivers privacy against the operator. A gigabyte proving key forces you to
+Architecture B, a server-side prover. But the server-side prover receives the
+\texttt{nullifier} and \texttt{secret}, which is the entire note.
+
+\begin{highlight}
+A mixer whose proofs are generated by a server is not a mixer. The operator can
+link every deposit to every withdrawal, which is precisely the linkage the
+construction exists to break. Choosing an on-chain-cheap hash forces
+server-side proving, and server-side proving destroys the privacy property that
+justified the mixer.
+\end{highlight}
+
+That is Wall Two, and it is a genuine dilemma rather than an engineering task.
+Note that it would evaporate the moment Cardano gained a Poseidon builtin: the
+tree would be Poseidon on both sides, the circuit would be 4{,}800 constraints,
+and the proof would be generated in a browser in under a second.
+
+%--------------------------------------------------------------------------
+\section{Wall Three: eUTxO Contention} \label{sec:ch8-wall3}
+
+Suppose Wall One and Wall Two both vanish tomorrow: Cardano ships a Poseidon
+builtin, the tree costs almost nothing on-chain, the circuit is small, proving
+happens in the browser. The mixer still does not work, for a reason that has
+nothing to do with cryptography.
+
+\subsection*{The Merkle Root Is Single-Threaded State}
+
+The pool's Merkle root lives in the datum of one UTxO. Every deposit must
+consume that UTxO and produce its successor. Two depositors who build
+transactions against the same pool UTxO produce two transactions spending the
+same input, and the ledger will accept exactly one. The loser's transaction
+is not delayed; it is invalid, and must be rebuilt against the new root and
+resubmitted.
+
+\begin{center}
+\begin{tabular}{lll}
+  \hline
+  \textbf{Property} & \textbf{Ethereum} & \textbf{Cardano} \\
+  \hline
+  Tree state          & Contract storage      & One UTxO's datum \\
+  Concurrent deposits & Ordered by the miner  & All but one invalid \\
+  Deposits per block  & Many                  & \textbf{One} \\
+  Block time          & $\approx$ 12 s        & $\approx$ 20 s \\
+  Max deposit rate    & Hundreds/min          & \textbf{3/min} \\
+  \hline
+\end{tabular}
+\end{center}
+
+Three deposits per minute is the theoretical ceiling, achieved only if depositors
+coordinate perfectly. Under real contention (independent users, no
+coordination) the effective rate is far lower, and users experience it as
+transactions that simply fail.
+
+\subsection*{Why This Is Fatal Rather Than Annoying}
+
+For most contended Cardano applications, this is a UX problem with known
+mitigations. For a mixer it is fatal, because \textbf{the anonymity set
+\emph{is} the throughput}. Privacy in a shielded pool comes from the number of
+plausible alternative depositors. A pool that accepts three deposits a minute at
+absolute best, and realistically far fewer, cannot accumulate a meaningful
+anonymity set. The construction's security parameter and the platform's
+bottleneck are the same quantity.
+
+\subsection*{And the Standard Mitigations Do Not Apply}
+
+\begin{itemize}
+  \item \textbf{Batching.} A coordinator collects deposits and inserts them
+        together. This works technically, and the coordinator learns exactly
+        which commitments arrived from which addresses in which batch. The
+        batcher becomes the deanonymiser.
+  \item \textbf{Sharding into $N$ parallel pools.} Standard practice for
+        Cardano concurrency, and here it divides the anonymity set by $N$. Ten
+        pools give ten times the throughput and one tenth of the privacy.
+        Anonymity does not shard.
+  \item \textbf{Deferred insertion.} Deposits queue in their own UTxOs and are
+        folded into the tree later. This works, but the queue UTxOs are public
+        and sit there linking depositor addresses to commitments until they are
+        absorbed, and the queue is itself a contended resource.
+  \item \textbf{Hydra.} A Hydra head has no contention, and also a fixed,
+        known participant set, which is the opposite of an anonymity set.
+\end{itemize}
+
+\begin{highlight}
+Every standard fix for eUTxO contention works by introducing a coordinator or by
+partitioning users. A mixer's security property is destroyed by coordinators and
+by partitions. Wall Three is not a performance limitation; it is a structural
+incompatibility between what makes eUTxO good (deterministic, local validation
+with no shared mutable state) and what a shielded pool needs (high-throughput
+shared mutable state).
+\end{highlight}
+
+%--------------------------------------------------------------------------
+\section{The Smaller Obstacles} \label{sec:ch8-smaller}
+
+For completeness, several further problems would need solving even if the three
+walls came down.
+
+\subsection*{Groth16's Per-Circuit Trusted Setup}
+
+Groth16 requires a fresh Phase 2 ceremony for every circuit. Since the tree
+depth is compiled into the circuit and each denomination is its own pool, every
+(denomination, depth) pair needs its own multi-party ceremony, its own proving
+key, and its own verification key. Five denominations means five ceremonies, and
+each one is a trust assumption a user must evaluate.
+
+This is the strongest practical argument for \textbf{PLONK} over Groth16. PLONK
+uses a single \emph{universal, updatable} setup: one ceremony serves every
+circuit up to a size bound, and it can be extended indefinitely by new
+contributors. For an application family like this, that difference is decisive.
+
+The obstacle is that no production-grade PLONK verifier exists in Aiken today.
+Groth16 verification is three point decompressions and four pairings, which maps
+neatly onto Cardano's builtins. A PLONK verifier needs polynomial commitment
+openings, a transcript hash, and considerably more field arithmetic, and we
+have just measured what field arithmetic costs in a Plutus script. The same
+interpreter overhead that blocks on-chain Poseidon also stands between Cardano
+and a practical PLONK verifier. We return to this in
+Chapter~\ref{ch:future}.
+
+\subsection*{Four Proofs Per Transaction}
+
+At 2.005 billion CPU steps per verification against a 10 billion budget, a
+transaction can carry at most four Groth16 verifications. Batched withdrawals
+(an obvious efficiency measure, and a privacy measure, since batching
+withdrawals blurs timing) cap out at four.
+
+\subsection*{No Relayer Market}
+
+Tornado's relayer network exists because relaying is profitable at Ethereum fee
+levels. Cardano transaction fees are a fraction of an ADA, so the fee a relayer
+could extract is small in absolute terms while the operational and legal risk is
+not. Nothing prevents relayers from existing on Cardano; economics makes them
+unlikely to.
+
+\subsection*{Datum Growth and Sizes}
+
+The pool datum holds 20 filled-node hashes plus bookkeeping, under a kilobyte,
+comfortably within the 16{,}384-byte transaction limit. The withdrawal redeemer
+carries a 192-byte proof. Sizes are not a binding constraint here, which is worth
+saying explicitly: the limits that bite are execution units and contention, not
+bytes.
+
+%--------------------------------------------------------------------------
+\section{Verdict} \label{sec:ch8-verdict}
+
+\begin{center}
+\begin{tabular}{lp{6.9cm}}
+  \hline
+  \textbf{Component} & \textbf{Status on Cardano today} \\
+  \hline
+  Withdrawal circuit
+    & Works. Standard Circom over BLS12-381. \\
+  \addlinespace
+  On-chain proof verification
+    & Works. 2.0B CPU, $\approx$ 0.15 ADA, constant in circuit size. \\
+  \addlinespace
+  Nullifier double-spend check
+    & Works, and is \emph{better} than Ethereum's: enforced by the ledger
+      via token uniqueness. \\
+  \addlinespace
+  Fixed denominations
+    & Works. Trivial in eUTxO. \\
+  \addlinespace
+  Recipient/fee binding
+    & Works. Public inputs the validator checks. \\
+  \hline
+  \addlinespace
+  On-chain Merkle insertion with Poseidon
+    & \textbf{Fails.} 120\% of CPU and 173\% of memory budget at depth 20. \\
+  \addlinespace
+  Merkle insertion with a builtin hash
+    & On-chain fine; forces a 600k-constraint circuit, hence server-side
+      proving, hence no privacy. \\
+  \addlinespace
+  Concurrent deposits
+    & \textbf{Fails structurally.} One deposit per block per pool; anonymity
+      set equals throughput. \\
+  \hline
+\end{tabular}
+\end{center}
+
+\begin{highlight}
+\textbf{Tornado Cash cannot be built on Cardano today.} Not because Cardano
+cannot verify zero-knowledge proofs (it verifies them cheaply and elegantly),
+but because it cannot maintain ZK-friendly cryptographic state on-chain, and
+because a shielded pool needs high-throughput shared mutable state that the
+eUTxO model is deliberately designed not to provide.
+\end{highlight}
+
+The distinction is worth stating precisely, because it generalises well beyond
+mixers:
+
+\begin{outline}
+Cardano today supports ZK applications where the \textbf{prover's statement is
+about data the verifier already has}, and struggles with applications where the
+statement is about \textbf{an accumulator the chain must maintain}.
+\end{outline}
+
+Our password lock in Chapter~\ref{ch:password} is the first kind: the hash sits
+in the datum, the validator reads it, done. Janus Wallet's authentication is the
+first kind. A mixer, a private rollup, an anonymous voting register with
+on-chain membership updates; all the second kind.
+
+%--------------------------------------------------------------------------
+\section{What Would Have to Change} \label{sec:ch8-changes}
+
+\begin{center}
+\begin{tabular}{p{4.0cm}p{8.0cm}}
+  \hline
+  \textbf{Change} & \textbf{Effect} \\
+  \hline
+  A Poseidon builtin
+    & Removes Walls One and Two entirely. Deposits become as cheap as
+      blake2b, circuits stay at 4{,}800 constraints, proving returns to the
+      browser. \emph{This single primitive is the highest-leverage change
+      available.} \\
+  \addlinespace
+  Native scalar field arithmetic builtins
+    & Removes the $\approx 2\times10^5$-steps-per-operation floor. Makes
+      on-chain Poseidon, PLONK verifiers, and custom curve work viable.
+      Partially addressed by CIP-109's \texttt{modularExponentiation}. \\
+  \addlinespace
+  A production PLONK verifier in Aiken
+    & One universal ceremony instead of one per pool. Blocked today by the
+      same field-arithmetic cost. \\
+  \addlinespace
+  Larger execution budgets
+    & Helps at the margin only. The memory budget rose from 11.25M to 14M to
+      16.5M, roughly 47\% in total. On-chain Poseidon at depth 20 needs
+      about $17\times$ the current memory budget. Incremental parameter
+      increases will not close a gap of that size. \\
+  \addlinespace
+  Contention-free shared state
+    & The genuinely hard one. Requires either a coordinator (which breaks
+      anonymity) or a different execution model. \\
+  \hline
+\end{tabular}
+\end{center}
+
+The last row is why Midnight exists. Cardano's answer to applications needing
+private shared state is not to reshape the eUTxO ledger but to put them on a
+partner chain designed for it, with selective disclosure built in, which is
+also a deliberate answer to the regulatory question that opened this chapter.
+Chapter~\ref{ch:future} takes that up.
+
+%--------------------------------------------------------------------------
+\section{Chapter Summary} \label{sec:ch8-summary}
+
+\begin{itemize}
+  \item Tornado Cash is three ingredients: a commitment Merkle tree, a nullifier
+        set, and fixed denominations. The anonymity set is the pool's
+        throughput.
+  \item The withdrawal side ports cleanly to Cardano. The circuit is standard
+        Circom, and verification costs 2.0B CPU steps regardless of circuit
+        size.
+  \item The nullifier set ports \emph{better} than on Ethereum: minting a token
+        named after the nullifier hash makes double-spend prevention a ledger
+        invariant rather than a script check.
+  \item \textbf{Wall One:} no Poseidon builtin. Measured, the cost floor for any
+        elementary operation in a Plutus script is $\approx 2\times10^5$ CPU
+        steps and $\approx 600$ memory units, driven by interpreter overhead,
+        not operand width, so no optimisation escapes it. A depth-20 Poseidon
+        insertion needs 120\% of the CPU and 173\% of the memory budget.
+  \item \textbf{Wall Two:} the hashes Cardano computes cheaply cost
+        $\approx 30{,}000$ constraints in-circuit; the hash that costs
+        $\approx 240$ constraints cannot be computed on-chain. Choosing the
+        on-chain-cheap hash forces a 600k-constraint circuit, hence server-side
+        proving, hence no privacy against the operator.
+  \item \textbf{Wall Three:} the Merkle root is one UTxO. One deposit per block
+        per pool, $\approx$ 3/minute at best. Every standard mitigation
+        introduces a coordinator or partitions users, and both destroy anonymity.
+  \item The general lesson: Cardano supports ZK where the statement concerns
+        data the chain already holds, and struggles where the chain must
+        maintain a ZK-friendly accumulator.
+  \item A single Poseidon builtin would remove two of the three walls.
+\end{itemize}

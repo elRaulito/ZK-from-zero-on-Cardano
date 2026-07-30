@@ -1,0 +1,1024 @@
+% Chapter 7: Implementing Off-Chain Logic for ZK in Cardano.
+% All source code lives in zk-password/ at the root of the repository.
+
+%--------------------------------------------------------------------------
+\section{The On-Chain Part Is the Small Part} \label{sec:ch7-small-part}
+
+Chapter~\ref{ch:password} produced a working ZK validator. Let us look at how
+big it actually is. After \texttt{aiken build}, the compiled validator,
+including the entire Groth16 verifier, the pairing equation, and the public
+input accumulation, occupies \textbf{570 bytes} of Plutus Core.
+
+Everything else in a ZK application is off-chain: the circuit, the trusted
+setup, the witness calculation, the prover, the point compression, the datum
+and redeemer encoding, the transaction construction, the UTxO indexing, and the
+key management. That is thousands of lines of code and several hundred megabytes
+of artifacts, against 570 bytes on-chain.
+
+\begin{highlight}
+A ZK application on Cardano is an off-chain application with a 570-byte
+on-chain referee. If you get the off-chain pipeline wrong, nothing works,
+and the on-chain error message will only ever tell you \emph{``validation
+failed''}.
+\end{highlight}
+
+This chapter is about that off-chain pipeline: which software computes proofs,
+how to drive it step by step, how to get a proof into a redeemer with MeshJS,
+and what the resulting transactions actually look like and cost.
+
+\subsection*{Division of Responsibilities}
+
+\begin{center}
+\begin{tabular}{lll}
+  \hline
+  \textbf{Responsibility}       & \textbf{Where}  & \textbf{Tool} \\
+  \hline
+  Define the statement          & Off-chain       & Circom \\
+  Produce public parameters     & Off-chain       & snarkjs (ceremony) \\
+  Compute the witness           & Off-chain       & WASM / C++ \\
+  Produce the proof             & Off-chain       & snarkjs / rapidsnark \\
+  Compress curve points         & Off-chain       & @noble/curves \\
+  Encode as Plutus Data         & Off-chain       & MeshJS \\
+  Build \& submit transaction   & Off-chain       & MeshJS + provider \\
+  \textbf{Verify the proof}     & \textbf{On-chain} & \textbf{Aiken} \\
+  Enforce spending conditions   & On-chain        & Aiken \\
+  \hline
+\end{tabular}
+\end{center}
+
+Note that only two rows are on-chain, and the cryptographic one is a single
+function call. Cardano's contribution to a ZK application is remarkably
+narrow, and, as we will measure below, remarkably cheap.
+
+%--------------------------------------------------------------------------
+\section{What Software Computes Proofs} \label{sec:ch7-provers}
+
+There is no single ``ZK prover''. There is a family of tools, and the right
+choice depends on where the proof must be computed: in a browser tab, on a
+server, or on a phone.
+
+\subsection*{The Circuit Compiler}
+
+\textbf{Circom} is the constraint-system compiler we have been using. It takes
+\texttt{.circom} source and emits an R1CS file plus a witness calculator. Circom
+does not prove anything; it only describes the statement and computes witnesses.
+
+\begin{verbatim}
+circom --r1cs --wasm --sym --inspect \
+       --prime bls12381 circuit/circuit.circom -o circuit/
+\end{verbatim}
+
+The \texttt{--prime bls12381} flag is not optional for Cardano. Circom's default
+is BN254 (Ethereum's curve). A BN254 proof is mathematically valid and will
+verify with snarkjs, and will fail on Cardano, because Cardano's builtins
+only implement BLS12-381. This mismatch is the single most common cause of
+``my proof verifies locally but the validator rejects it''.
+
+Alternatives to Circom exist and are worth knowing about, though none of them
+currently has a Cardano verifier:
+
+\begin{itemize}
+  \item \textbf{Noir} (Aztec): a Rust-like ZK language, much nicer to write
+        than Circom, but its default backend (Barretenberg / UltraHonk) has no
+        Aiken verifier.
+  \item \textbf{Halo2} (Zcash / PSE): no trusted setup, recursive-friendly,
+        but its verifier needs operations Cardano does not expose cheaply.
+  \item \textbf{Circom + PLONK}: snarkjs can produce PLONK proofs from the
+        same R1CS. The verifier is more complex than Groth16 and, at the time
+        of writing, no production-grade PLONK verifier exists in Aiken.
+        We return to this in Chapter~\ref{ch:future}.
+\end{itemize}
+
+\begin{remark}
+For Cardano today, \textbf{Circom + snarkjs + Groth16 over BLS12-381} is the
+only fully supported path from circuit to on-chain verification. Everything in
+this chapter assumes it.
+\end{remark}
+
+\subsection*{The Provers}
+
+Given an R1CS, a proving key, and a witness, several programs can produce the
+proof. They differ by orders of magnitude in speed.
+
+\begin{center}
+\begin{tabular}{llll}
+  \hline
+  \textbf{Prover} & \textbf{Language} & \textbf{Runs in} & \textbf{Speed} \\
+  \hline
+  snarkjs            & JavaScript / WASM & Browser, Node & Baseline \\
+  rapidsnark         & C++ (asm)         & Server, native & 5--10$\times$ \\
+  ark-circom         & Rust (arkworks)   & Server, native & 5--10$\times$ \\
+  witnesscalc        & C++               & iOS, Android   & 10$\times$ (witness) \\
+  gnark              & Go                & Server         & 5--10$\times$ \\
+  \hline
+\end{tabular}
+\end{center}
+
+\begin{itemize}
+  \item \textbf{snarkjs} is the reference implementation and the one to start
+        with. It runs everywhere, needs no compilation, and is what we use in
+        this book. Install with \texttt{npm install -g snarkjs}.
+  \item \textbf{rapidsnark} is the production choice for server-side proving.
+        It reads the same \texttt{.zkey} and \texttt{.wtns} files as snarkjs and
+        emits an identical \texttt{proof.json}, so it is a drop-in replacement
+        once your pipeline works. Note that rapidsnark's BLS12-381 support is
+        less mature than its BN254 support, verify this before committing.
+  \item \textbf{ark-circom} lets you drive Circom circuits from Rust using
+        arkworks. Useful if your off-chain service is already Rust, and
+        arkworks has first-class BLS12-381 support.
+  \item \textbf{witnesscalc} replaces only the witness-calculation step, which
+        is often the bottleneck on mobile hardware.
+\end{itemize}
+
+\subsection*{The Supporting Cast}
+
+\begin{center}
+\begin{tabular}{ll}
+  \hline
+  \textbf{Package} & \textbf{Role} \\
+  \hline
+  \texttt{circomlib}       & Circuit primitives: Poseidon, comparators, bits \\
+  \texttt{circomlibjs}     & JS reimplementation of those primitives \\
+  \texttt{@noble/curves}   & Point compression to Cardano's byte format \\
+  \texttt{@meshsdk/core}   & Transaction building, Plutus Data encoding \\
+  \texttt{@lucid-evolution/lucid} & Alternative to MeshJS \\
+  Blockfrost / Koios / Maestro & Chain queries and submission \\
+  \hline
+\end{tabular}
+\end{center}
+
+\begin{remark}
+\texttt{circomlibjs} is a trap for Cardano developers. Its \texttt{buildPoseidon}
+implements Poseidon over \textbf{BN254}, not BLS12-381. Calling it to compute the
+hash that your BLS12-381 circuit will check produces a value that is simply
+wrong, and the failure surfaces much later as an unsatisfiable constraint.
+Chapter~\ref{ch:password} solved this by compiling a tiny helper circuit
+(\texttt{poseidon\_hash.circom}) and reading the hash out of its witness.
+Do that.
+\end{remark}
+
+%--------------------------------------------------------------------------
+\section{The Pipeline, Step by Step} \label{sec:ch7-pipeline}
+
+The full pipeline has six stages. Stages 1--3 happen once per circuit. Stages
+4--6 happen once per proof. Confusing the two is the second most common source
+of bugs.
+
+\begin{center}
+\begin{tabular}{clll}
+  \hline
+  \textbf{\#} & \textbf{Stage} & \textbf{Frequency} & \textbf{Output} \\
+  \hline
+  1 & Compile circuit    & Per circuit & \texttt{.r1cs}, \texttt{.wasm} \\
+  2 & Trusted setup      & Per circuit & \texttt{.zkey}, \texttt{vk.json} \\
+  3 & Compress the VK    & Per circuit & \texttt{compressed\_vk.json} \\
+  4 & Compute witness    & Per proof   & \texttt{.wtns} \\
+  5 & Prove              & Per proof   & \texttt{proof.json}, \texttt{public.json} \\
+  6 & Compress the proof & Per proof   & \texttt{compressed\_proof.json} \\
+  \hline
+\end{tabular}
+\end{center}
+
+\subsection*{Stage 1: Compile}
+
+\begin{verbatim}
+circom --r1cs --wasm --sym --inspect \
+       --prime bls12381 circuit/circuit.circom -o circuit/
+
+snarkjs r1cs info circuit/circuit.r1cs
+\end{verbatim}
+
+Read the \texttt{r1cs info} output carefully every time. It tells you the curve,
+the number of public inputs, and the number of constraints. The number of public
+inputs must equal \texttt{length(vk\_ic) - 1} in your compressed verification
+key, and must equal the length of the list you pass to
+\texttt{groth16\_verify} in Aiken. For our password circuit:
+
+\begin{verbatim}
+[INFO]  snarkJS: Curve: bls12-381
+[INFO]  snarkJS: # of Wires: 219
+[INFO]  snarkJS: # of Constraints: 216
+[INFO]  snarkJS: # of Public Inputs: 1
+[INFO]  snarkJS: # of Private Inputs: 1
+[INFO]  snarkJS: # of Outputs: 0
+\end{verbatim}
+
+\subsection*{Stage 2: Trusted Setup}
+
+Phase 1 (Powers of Tau) is circuit-independent and reusable. Phase 2 is bound to
+this specific R1CS.
+
+\begin{verbatim}
+# Phase 1: universal, reusable across circuits
+snarkjs powersoftau new bls12381 12 pot12_0000.ptau -v
+snarkjs powersoftau contribute pot12_0000.ptau pot12_0001.ptau \
+    --name="dev" -e="some entropy"
+snarkjs powersoftau beacon pot12_0001.ptau pot12_beacon.ptau \
+    00000000000000000000000000000000 10 -n="Dev beacon"
+snarkjs powersoftau prepare phase2 \
+    pot12_beacon.ptau pot12_final.ptau -v
+
+# Phase 2: specific to circuit.r1cs
+snarkjs groth16 setup \
+    circuit/circuit.r1cs pot12_final.ptau zkey_0000.zkey
+snarkjs zkey contribute zkey_0000.zkey zkey_0001.zkey \
+    --name="dev" -e="more entropy"
+snarkjs zkey beacon zkey_0001.zkey zkey_final.zkey \
+    00000000000000000000000000000000 10 -n="Final beacon"
+snarkjs zkey export verificationkey \
+    zkey_final.zkey verification_key.json
+\end{verbatim}
+
+The power \texttt{12} means $2^{12} = 4096$ maximum constraints. Choose the
+smallest power that exceeds your constraint count: the \texttt{.ptau} and
+\texttt{.zkey} file sizes grow linearly with $2^{\text{power}}$, and so does the
+proving time. This matters enormously in practice; we will see in
+Chapter~\ref{ch:tornado} that a circuit needing $2^{20}$ turns a 2\,MB
+proving key into a multi-gigabyte one.
+
+\begin{highlight}
+\textbf{The proving key is not a secret, but it is not small either.}
+Stage 2 is the point at which a ZK application acquires a distribution problem:
+every prover needs \texttt{zkey\_final.zkey} and \texttt{circuit.wasm}, and
+every verifier needs to agree on the same \texttt{compressed\_vk.json}.
+\end{highlight}
+
+\subsection*{Stage 3: Compress the Verification Key}
+
+Cardano's BLS12-381 builtins accept only compressed points: 48 bytes for G1,
+96 bytes for G2. snarkjs emits uncompressed affine coordinates. The
+\texttt{compress\_vk.js} script from Chapter~\ref{ch:password} does the
+conversion:
+
+\begin{verbatim}
+node circuit/compress_vk.js
+\end{verbatim}
+
+This is a per-circuit operation. The output is the value you will embed in the
+datum (or hard-code in the validator, or store in a reference input, see
+Section~\ref{sec:ch7-ops}).
+
+\subsection*{Stage 4: Compute the Witness}
+
+For our circuit the witness needs the password as a field element and its
+Poseidon hash over BLS12-381:
+
+\begin{verbatim}
+node circuit/gen_input.js 123456
+\end{verbatim}
+
+\begin{verbatim}
+password : 123456
+hash     : 941543474650874718122864576426741288983580381
+           5708024285868314342086739058356
+written  : circuit/input.json
+\end{verbatim}
+
+\begin{remark}
+\texttt{gen\_input.js} is the only place in the entire pipeline that touches the
+plaintext password. Everything downstream operates on field elements and curve
+points. When you audit a ZK application, this is the file to audit first.
+\end{remark}
+
+\subsection*{Stage 5: Prove}
+
+\begin{verbatim}
+snarkjs groth16 fullprove \
+    circuit/input.json \
+    circuit/circuit_js/circuit.wasm \
+    zkey_final.zkey \
+    proof.json public.json
+
+snarkjs groth16 verify verification_key.json public.json proof.json
+\end{verbatim}
+
+Always run the off-chain \texttt{verify} before building a transaction. It costs
+milliseconds and distinguishes ``my proof is wrong'' from ``my encoding is
+wrong'', two failures that look identical from on-chain.
+
+\subsection*{Stage 6: Compress the Proof}
+
+\begin{verbatim}
+node circuit/compress_proof.js
+\end{verbatim}
+
+The result is three hex strings. For our worked example:
+
+\begin{verbatim}
+{
+  "pi_a": "b15f6da17265cbb596036075e87ddfe62d210a92c65cb30a
+           c65375659ef26511c50b55b989abc6da22f05495fca74380",
+  "pi_b": "ac6f06b66982fc793de1a1d393b66f80f967cf4f984bc18a
+           c9e034a618d732f5a9dd9c632da14178b54584a682f80708
+           08437cb5f80c0559f9cddf71f7edbddb4853249ba637ec3a
+           59950eff969e99a2d4574a6f229a753cdb2d5674fcf060cf",
+  "pi_c": "8d6da5b26036b096441e48b6c490f56c4a4f9148a881b0e5
+           0c556626a4cef37d672c0e8d7c74fc0b2214e0bf63f36f8a"
+}
+\end{verbatim}
+
+(Line breaks added for the page; the real file has one string per field.)
+That is \textbf{192 bytes} of proof (48 + 96 + 48), regardless of how
+complicated the statement was. This constant size is Groth16's defining
+property and the reason it suits a blockchain.
+
+%--------------------------------------------------------------------------
+\section{Where Should the Prover Run?} \label{sec:ch7-where}
+
+This is an architectural decision, not a technical one, and it determines
+whether your application actually provides privacy. There are three options.
+
+\subsection*{Architecture A: Client-Side Proving}
+
+The witness and the proof are computed in the user's browser or app. The secret
+never leaves the device.
+
+\begin{verbatim}
+  [user's browser]                          [chain]
+  secret --> witness --> proof --------------> validator
+             (wasm)      (snarkjs)             (Aiken)
+\end{verbatim}
+
+\begin{itemize}
+  \item \textbf{Privacy:} maximal. Nobody but the user ever sees the secret.
+  \item \textbf{Cost:} the user downloads the \texttt{.zkey} (megabytes to
+        gigabytes) and pays the proving time.
+  \item \textbf{Verdict:} the only architecture that honestly delivers
+        zero-knowledge. Use it whenever the circuit is small enough.
+\end{itemize}
+
+\subsection*{Architecture B: Server-Side Proving}
+
+The user sends the secret to a server, which computes the proof and returns it
+(or builds the whole transaction). This is what Janus
+Wallet\footnote{\texttt{https://github.com/leobel/janus-wallet}} does: a
+Node.js service with \texttt{circom} installed, PostgreSQL for user and circuit
+records, and Blockfrost for submission.
+
+\begin{verbatim}
+  [browser]        [prover service]           [chain]
+  secret ----------> witness --> proof --------> validator
+           (TLS)     (rapidsnark)
+\end{verbatim}
+
+\begin{itemize}
+  \item \textbf{Privacy:} \emph{none against the server.} The server sees the
+        password. The proof is still zero-knowledge with respect to the
+        blockchain and every other observer, but the operator is fully trusted.
+  \item \textbf{Cost:} fast proving, no large client download.
+  \item \textbf{Verdict:} legitimate for onboarding and UX, provided you say so
+        plainly. It is a custodial-style trust assumption wearing a
+        zero-knowledge badge.
+\end{itemize}
+
+\begin{highlight}
+``The proof is zero-knowledge'' and ``the system is zero-knowledge'' are
+different claims. A server-side prover satisfies the first and violates the
+second. Be explicit about which one you are offering.
+\end{highlight}
+
+\subsection*{Architecture C: Hybrid}
+
+The witness is computed client-side; the proof is computed server-side from the
+witness. This does not help: for most circuits the witness contains the private
+signals verbatim, so the server still learns the secret. The variant that
+\emph{does} help is delegating only the transaction \emph{submission}, a
+relayer. The relayer sees the proof (public anyway) and pays the fee, but never
+sees the witness. We use exactly this pattern in Chapter~\ref{ch:tornado}.
+
+%--------------------------------------------------------------------------
+\section{Encoding Proofs as Plutus Data} \label{sec:ch7-encoding}
+
+The bridge between snarkjs and Aiken is Plutus Data. Get the shape right and
+everything works; get the field order wrong and you receive an unhelpful
+validation failure.
+
+\subsection*{The Mapping Rules}
+
+\begin{center}
+\begin{tabular}{lll}
+  \hline
+  \textbf{Aiken} & \textbf{Plutus Data} & \textbf{MeshJS} \\
+  \hline
+  \texttt{Int}            & \texttt{I} integer     & \texttt{number} / \texttt{bigint} \\
+  \texttt{ByteArray}      & \texttt{B} bytes       & hex \texttt{string} \\
+  \texttt{List<a>}        & \texttt{List}          & \texttt{Array} \\
+  record / constructor    & \texttt{Constr} $n$    & \texttt{mConStr}$n$\texttt{([...])} \\
+  \texttt{Option.Some(x)} & \texttt{Constr} 0      & \texttt{mConStr0([x])} \\
+  \texttt{Option.None}    & \texttt{Constr} 1      & \texttt{mConStr1([])} \\
+  \hline
+\end{tabular}
+\end{center}
+
+Three rules govern the translation:
+
+\begin{enumerate}
+  \item \textbf{Field order is positional.} Aiken records serialise their fields
+        in declaration order. The Plutus Data \texttt{Constr} carries no field
+        names, so \texttt{mConStr0} arguments must appear in exactly the order
+        the Aiken \texttt{type} declares them.
+  \item \textbf{Single-constructor records use alternative 0.}
+  \item \textbf{Opaque types cannot cross the boundary.} As we discovered in
+        Chapter~\ref{ch:password}, \texttt{Scalar} is opaque; the datum must
+        carry a plain \texttt{Int} and the validator converts it with
+        \texttt{scalar.new}.
+\end{enumerate}
+
+\subsection*{Our Types, Encoded}
+
+Recall the Aiken declarations:
+
+\begin{verbatim}
+pub type VerificationKey {
+  alpha: ByteArray,        // G1: 48 bytes
+  beta:  ByteArray,        // G2: 96 bytes
+  gamma: ByteArray,        // G2: 96 bytes
+  delta: ByteArray,        // G2: 96 bytes
+  ic:    List<ByteArray>,  // G1 points
+}
+
+pub type Proof {
+  pi_a: ByteArray,  pi_b: ByteArray,  pi_c: ByteArray,
+}
+
+pub type Datum    { credential_hash: Int, vk: VerificationKey }
+pub type Redeemer { proof: Proof }
+\end{verbatim}
+
+And the corresponding MeshJS encoding:
+
+\begin{verbatim}
+import { mConStr0 } from "@meshsdk/core";
+import compressedVk from "./compressed_vk.json";
+import compressedProof from "./compressed_proof.json";
+import publicSignals from "./public.json";
+
+// VerificationKey: five fields, in declaration order
+const vkData = mConStr0([
+  compressedVk.vk_alpha1,
+  compressedVk.vk_beta2,
+  compressedVk.vk_gamma2,
+  compressedVk.vk_delta2,
+  compressedVk.vk_ic,        // List<ByteArray> -> JS Array
+]);
+
+// Datum { credential_hash: Int, vk: VerificationKey }
+// public.json holds a decimal string; it exceeds 2^53, so BigInt
+// is mandatory. parseInt() here silently corrupts the value.
+const datumData = mConStr0([
+  BigInt(publicSignals[0]),
+  vkData,
+]);
+
+// Proof, then Redeemer { proof: Proof }
+const proofData = mConStr0([
+  compressedProof.pi_a,
+  compressedProof.pi_b,
+  compressedProof.pi_c,
+]);
+
+const redeemerData = mConStr0([proofData]);
+\end{verbatim}
+
+\begin{remark}
+The \texttt{credential\_hash} is a 255-bit field element. JavaScript's
+\texttt{number} holds 53 bits of integer precision. Using \texttt{parseInt} or
+\texttt{Number} on it produces a nearby-but-wrong value, the datum hash changes,
+and the validator fails on a value that \emph{looks} right in the console.
+Always \texttt{BigInt}.
+\end{remark}
+
+\subsection*{Sanity-Check the Encoding Before Submitting}
+
+You can verify the datum round-trips without spending anything:
+
+\begin{verbatim}
+import { serializeData, deserializeDatum } from "@meshsdk/core";
+
+const cbor = serializeData(datumData, "Mesh");
+console.log("datum cbor:", cbor);
+console.log("round-trip:", deserializeDatum(cbor));
+\end{verbatim}
+
+Compare the CBOR against what \texttt{aiken blueprint} reports for the datum
+schema. A mismatch here is a mismatch on-chain.
+
+%--------------------------------------------------------------------------
+\section{Building the Transactions with MeshJS} \label{sec:ch7-mesh}
+
+We now have all the pieces. Let us build the two transactions: one to lock ADA
+behind the ZK lock, one to unlock it with a proof.
+
+\subsection*{Setup: \texttt{common.ts}}
+
+\begin{verbatim}
+npm install @meshsdk/core @meshsdk/core-csl
+\end{verbatim}
+
+\begin{verbatim}
+import fs from "node:fs";
+import {
+  BlockfrostProvider, MeshTxBuilder, MeshWallet,
+  serializePlutusScript, UTxO,
+} from "@meshsdk/core";
+import { applyParamsToScript } from "@meshsdk/core-csl";
+import blueprint from "../plutus.json";
+
+const projectId = process.env.BLOCKFROST_PROJECT_ID;
+if (!projectId) throw new Error("Missing BLOCKFROST_PROJECT_ID");
+
+export const provider = new BlockfrostProvider(projectId);
+
+export const wallet = new MeshWallet({
+  networkId: 0,             // 0 = preprod/preview, 1 = mainnet
+  fetcher: provider,
+  submitter: provider,
+  key: {
+    type: "root",
+    bech32: fs.readFileSync("me.sk").toString(),
+  },
+});
+
+export function getScript() {
+  const scriptCbor = applyParamsToScript(
+    blueprint.validators[0].compiledCode, []
+  );
+  const scriptAddr = serializePlutusScript(
+    { code: scriptCbor, version: "V3" }
+  ).address;
+  return { scriptCbor, scriptAddr };
+}
+
+export function getTxBuilder() {
+  return new MeshTxBuilder({
+    fetcher: provider,
+    submitter: provider,
+    evaluator: provider,
+  });
+}
+
+export async function getUtxoByTxHash(
+  txHash: string
+): Promise<UTxO> {
+  const utxos = await provider.fetchUTxOs(txHash);
+  if (utxos.length === 0) throw new Error("UTxO not found");
+  return utxos[0];
+}
+\end{verbatim}
+
+Passing \texttt{evaluator} lets MeshJS ask the provider to evaluate the script
+and fill in the execution-unit budget automatically, instead of you guessing it.
+
+\subsection*{\texttt{lock.ts}: Locking Behind the ZK Lock}
+
+\begin{verbatim}
+import { Asset, mConStr0 } from "@meshsdk/core";
+import { getScript, getTxBuilder, wallet } from "./common";
+import compressedVk from "../compressed_vk.json";
+import publicSignals from "../public.json";
+
+async function main() {
+  const assets: Asset[] =
+    [{ unit: "lovelace", quantity: "5000000" }];
+
+  const utxos = await wallet.getUtxos();
+  const walletAddress = (await wallet.getUsedAddresses())[0];
+  const { scriptAddr } = getScript();
+
+  const vkData = mConStr0([
+    compressedVk.vk_alpha1, compressedVk.vk_beta2,
+    compressedVk.vk_gamma2, compressedVk.vk_delta2,
+    compressedVk.vk_ic,
+  ]);
+
+  const datum = mConStr0([BigInt(publicSignals[0]), vkData]);
+
+  const txBuilder = getTxBuilder();
+  await txBuilder
+    .txOut(scriptAddr, assets)
+    .txOutInlineDatumValue(datum)
+    .changeAddress(walletAddress)
+    .selectUtxosFrom(utxos)
+    .complete();
+
+  const signedTx = await wallet.signTx(txBuilder.txHex);
+  const txHash = await wallet.submitTx(signedTx);
+  console.log("locked at:", txHash);
+}
+
+main();
+\end{verbatim}
+
+We use \texttt{txOutInlineDatumValue}, not \texttt{txOutDatumHashValue}. With an
+inline datum the verification key and the Poseidon hash live directly in the
+UTxO, so any spender can read them from the chain without a side channel. With a
+datum hash the spender would have to obtain the preimage from somewhere else:
+extra infrastructure for no privacy benefit, since neither value is secret.
+
+\begin{highlight}
+Storing the verification key in the datum makes each locked UTxO
+self-describing, at the cost of roughly 430 bytes of on-chain data per UTxO.
+Section~\ref{sec:ch7-ops} discusses the alternative: bake the VK into the
+validator as a compile-time parameter.
+\end{highlight}
+
+\subsection*{\texttt{unlock.ts}: Spending with a Proof}
+
+\begin{verbatim}
+import { mConStr0 } from "@meshsdk/core";
+import {
+  getScript, getTxBuilder, getUtxoByTxHash, wallet,
+} from "./common";
+import compressedProof from "../compressed_proof.json";
+
+async function main() {
+  const lockTxHash = process.argv[2];
+
+  const utxos = await wallet.getUtxos();
+  const walletAddress = (await wallet.getUsedAddresses())[0];
+  const collateral = (await wallet.getCollateral())[0];
+
+  const { scriptCbor } = getScript();
+  const scriptUtxo = await getUtxoByTxHash(lockTxHash);
+
+  // Redeemer { proof: Proof { pi_a, pi_b, pi_c } }
+  const redeemer = mConStr0([
+    mConStr0([
+      compressedProof.pi_a,
+      compressedProof.pi_b,
+      compressedProof.pi_c,
+    ]),
+  ]);
+
+  const txBuilder = getTxBuilder();
+  await txBuilder
+    .spendingPlutusScript("V3")
+    .txIn(
+      scriptUtxo.input.txHash,
+      scriptUtxo.input.outputIndex,
+      scriptUtxo.output.amount,
+      scriptUtxo.output.address
+    )
+    .txInScript(scriptCbor)
+    .txInRedeemerValue(redeemer)
+    .txInInlineDatumPresent()
+    .txInCollateral(
+      collateral.input.txHash,
+      collateral.input.outputIndex,
+      collateral.output.amount,
+      collateral.output.address
+    )
+    .changeAddress(walletAddress)
+    .selectUtxosFrom(utxos)
+    .complete();
+
+  const signedTx = await wallet.signTx(txBuilder.txHex);
+  const txHash = await wallet.submitTx(signedTx);
+  console.log("unlocked at:", txHash);
+}
+
+main();
+\end{verbatim}
+
+Three details deserve attention.
+
+\begin{itemize}
+  \item \texttt{txInInlineDatumPresent()} tells the builder the datum is already
+        on-chain. If the lock used a datum hash you would call
+        \texttt{txInDatumValue(datum)} and supply the preimage instead.
+  \item \texttt{txInCollateral} is mandatory for any Plutus spend. If the script
+        fails, the collateral is forfeited, which is why you test with
+        \texttt{aiken check} first, then on preprod, then on mainnet.
+  \item There is no \texttt{requiredSignerHash}. Our validator does not check
+        signatures at all: possession of a valid proof \emph{is} the
+        authorisation. That is the whole point, and also, as
+        Chapter~\ref{ch:password} warned, why replay protection matters
+        (Section~\ref{sec:ch7-ops}).
+\end{itemize}
+
+\subsection*{Running It}
+
+\begin{verbatim}
+export BLOCKFROST_PROJECT_ID=preprodXXXXXXXXXXXXXXXX
+npx tsx offchain/lock.ts
+npx tsx offchain/unlock.ts <lock-tx-hash>
+\end{verbatim}
+
+%--------------------------------------------------------------------------
+\section{What the Transactions Actually Cost} \label{sec:ch7-cost}
+
+Abstract talk about efficiency is worth less than measurement. Aiken reports
+execution units for every test, so we can read the real cost of our verifier
+directly:
+
+\begin{verbatim}
+aiken check
+\end{verbatim}
+
+\begin{verbatim}
+  PASS  zk_password/password_tests :: groth16_verify_valid_proof
+        mem: 34219, cpu: 2005373690
+\end{verbatim}
+
+Compare against the live mainnet protocol parameters (epoch 646, Conway era,
+protocol version 11):
+
+\begin{center}
+\begin{tabular}{lrr}
+  \hline
+  \textbf{Resource} & \textbf{Used} & \textbf{Budget} \\
+  \hline
+  CPU steps            & 2{,}005{,}373{,}690 & 10{,}000{,}000{,}000 \\
+  Memory units         & 34{,}219            & 16{,}500{,}000 \\
+  Script size (bytes)  & 570                 & 16{,}384 (whole tx) \\
+  \hline
+\end{tabular}
+\end{center}
+
+So a Groth16 verification consumes \textbf{20.1\% of the CPU budget} and
+\textbf{0.21\% of the memory budget}. At the current prices, 0.0000721
+lovelace per CPU step and 0.0577 lovelace per memory unit, the script
+execution costs:
+
+\[
+  2{,}005{,}373{,}690 \times 0.0000721 \;+\; 34{,}219 \times 0.0577
+  \;\approx\; 146{,}562 \text{ lovelace} \;\approx\; \mathbf{0.147\ ADA}
+\]
+
+\begin{highlight}
+\textbf{Verifying a zero-knowledge proof on Cardano costs about 0.15 ADA and
+one fifth of a transaction's CPU budget, and that figure does not depend on
+how complicated the circuit was.} Groth16 verification is three point
+decompressions and four pairings, whether the statement had 216 constraints or
+216{,}000.
+\end{highlight}
+
+This constancy is the single most important economic fact about ZK on Cardano,
+and we will lean on it heavily in Chapter~\ref{ch:tornado}. Its immediate
+corollary is a hard ceiling:
+
+\[
+  \left\lfloor \frac{10{,}000{,}000{,}000}{2{,}005{,}373{,}690} \right\rfloor
+  = 4 \text{ Groth16 verifications per transaction}
+\]
+
+You cannot batch five ZK spends into one transaction. The memory budget would
+allow 482 of them; the CPU budget allows four.
+
+%--------------------------------------------------------------------------
+\section{Generating the Off-Chain Code: \texttt{aiken-zk}} \label{sec:ch7-aikenzk}
+
+Writing all of this by hand, once, is educational. Writing it for every circuit
+is toil. The \textbf{aiken-zk} tool from
+Eryx\footnote{\texttt{https://github.com/eryxcoop/cardano-zk-aiken}}, funded
+by Project Catalyst Fund 13, automates most of it.
+
+The idea is a language extension: you annotate an Aiken validator with an
+\texttt{offchain} block describing a computation, and the tool emits the Circom
+circuit, the standard Aiken validator containing the Groth16 verifier, and the
+off-chain proving glue.
+
+\subsection*{The Workflow}
+
+\begin{verbatim}
+aiken-zk new my_project
+
+# transform annotated Aiken into plain Aiken + circuit + vk
+aiken-zk build code_with_offchain.ak aiken_code.ak
+
+# produce a proof as an Aiken literal (for tests)
+aiken-zk prove aiken output.circom verification_key.zkey \
+    inputs.json proof.ak
+
+# produce a proof as a ready-made MeshJS redeemer
+aiken-zk prove meshjs output.circom verification_key.zkey \
+    inputs.json zk_redeemer.ts
+\end{verbatim}
+
+That last command is the interesting one for this chapter: it emits the
+TypeScript redeemer object directly, replacing Stage 6 and the hand-written
+\texttt{mConStr0} nesting of Section~\ref{sec:ch7-encoding}.
+
+\subsection*{The \texttt{offchain} Vocabulary}
+
+\begin{center}
+\begin{tabular}{ll}
+  \hline
+  \textbf{Statement} & \textbf{Proves} \\
+  \hline
+  \texttt{addition(x, y, z)}        & $x + y = z$ \\
+  \texttt{subtraction(x, y, z)}     & $x - y = z$ \\
+  \texttt{multiplication(x, y, z)}  & $x \cdot y = z$ \\
+  \texttt{fibonacci(x, y, t, z)}    & $t$-th Fibonacci term is $z$ \\
+  \texttt{if(x, y, z, w)}           & $y = z$ if $x=1$, else $y = w$ \\
+  \texttt{assert\_eq(x, y)}         & $x = y$ \\
+  \texttt{sha256(t, A, B)}          & $\mathrm{sha256}(A) = B$ \\
+  \texttt{poseidon(t, A, x)}        & $\mathrm{Poseidon}(A) = x$ \\
+  \texttt{polynomial\_evaluations}  & polynomial evaluation \\
+  \texttt{merkle\_tree\_checker}    & Merkle inclusion path \\
+  \texttt{custom("...circom", [..])}& an arbitrary Circom component \\
+  \hline
+\end{tabular}
+\end{center}
+
+Arguments carry visibility modifiers, so \texttt{offchain addition(priv x, pub y, z)}
+makes \texttt{x} a private witness and \texttt{y} a public input. The
+\texttt{custom} escape hatch is what makes the tool genuinely useful: you can
+drop in any Circom component and still get the verifier and redeemer generated.
+
+\subsection*{Current Limitations}
+
+The project is young, and its README is candid about the edges:
+
+\begin{itemize}
+  \item Only \textbf{one} \texttt{offchain} statement per Aiken file.
+  \item \texttt{fibonacci}'s length parameter must be a literal.
+  \item List arguments cannot be literals.
+  \item \textbf{The \texttt{merkle\_tree\_checker} hash function is mocked:
+        ``do not use in production''.}
+\end{itemize}
+
+That last bullet is not an incidental bug. It is the same wall we will hit
+throughout Chapter~\ref{ch:tornado}, and it has a specific cause:
+Cardano has no ZK-friendly hash primitive. We will measure exactly how
+expensive that absence is.
+
+\begin{remark}
+Use \texttt{aiken-zk} to bootstrap and to learn the shape of the generated
+code, but read what it emits. A tool that hides the Circom layer will
+eventually hide a curve mismatch or a public-input ordering bug from you, and
+those are precisely the bugs that cost collateral.
+\end{remark}
+
+%--------------------------------------------------------------------------
+\section{Operational Concerns} \label{sec:ch7-ops}
+
+A working pipeline is not a working product. Five issues bite in production.
+
+\subsection*{1. Replay Protection}
+
+Our validator accepts any valid proof for the hash in the datum. A proof is
+public data sitting in a submitted transaction. An observer watching the mempool
+can copy the proof and submit their own transaction paying themselves.
+
+The fix is to bind the proof to something unique. Add a public input the
+validator can independently check:
+
+\begin{itemize}
+  \item \textbf{A nonce in the datum.} The validator requires the continuing
+        output's datum to carry \texttt{nonce + 1}, and the circuit takes the
+        nonce as a public input. Janus Wallet uses exactly this, with
+        \texttt{challenge} and \texttt{challengeFlag} signals.
+  \item \textbf{The recipient address.} Make the payment destination a public
+        input. A stolen proof can then only pay the original recipient, which
+        removes the attacker's incentive.
+  \item \textbf{The spent output reference.} Bind the proof to the specific UTxO
+        being consumed, which is unique by construction.
+\end{itemize}
+
+\begin{highlight}
+Any ZK validator that authorises value transfer on the strength of a proof
+alone, with no binding to the transaction, is replayable. This is not a Cardano
+quirk; it is true on every chain. Treat a proof as a bearer instrument.
+\end{highlight}
+
+\subsection*{2. Where to Put the Verification Key}
+
+Three options, with real trade-offs:
+
+\begin{center}
+\begin{tabular}{lll}
+  \hline
+  \textbf{Placement} & \textbf{Cost} & \textbf{Upgradeable} \\
+  \hline
+  Inline datum          & $\sim$430 bytes per UTxO & Yes, per UTxO \\
+  Compile-time param    & Larger script, once      & No (new address) \\
+  Reference input       & 15 lovelace/byte fee     & Yes, centrally \\
+  \hline
+\end{tabular}
+\end{center}
+
+Baking the VK into the script with \texttt{applyParamsToScript} is the cheapest
+per transaction and the most rigid: changing the circuit changes the script
+hash, hence the address, and funds at the old address need migrating. This is
+the trap Janus Wallet documents, a password change migrates the address, and
+funds sent to the old one are unrecoverable.
+
+The reference-input approach stores the VK in a UTxO consulted read-only by many
+transactions. With \texttt{minFeeRefScriptCoinsPerByte} currently at 15, our
+570-byte validator costs $570 \times 15 = 8{,}550$ lovelace ($\approx$ 0.009
+ADA) per transaction when referenced, cheaper than including the script
+inline once you have more than a handful of spends.
+
+\subsection*{3. Distributing the Ceremony Artifacts}
+
+Every prover needs \texttt{circuit.wasm} and \texttt{zkey\_final.zkey}. These
+are not secrets, but they are integrity-critical: a substituted zkey lets an
+attacker forge proofs that your on-chain VK will happily accept only if the VK
+was substituted too, so pin both. Publish the hashes, ideally on-chain
+alongside the VK, and have clients check them.
+
+\subsection*{4. Budget Estimation and Collateral}
+
+Let the provider's evaluator compute execution units rather than hard-coding
+them. Hard-coded budgets from a tutorial will be wrong after the next cost-model
+update, and an underestimate means a failed script and forfeited collateral.
+Note that \texttt{maxCollateralInputs} is 3 and
+\texttt{collateralPercentage} is 150, so you need a clean, ADA-only UTxO of
+sufficient size available at all times.
+
+\subsection*{5. Indexing}
+
+Nothing in Cardano tells you ``here are the UTxOs at my script address with a
+datum matching this hash''. You need to query and filter. Blockfrost's
+\texttt{/addresses/\{addr\}/utxos} plus datum decoding works for small
+applications; anything larger wants Kupo, Ogmios, or Carp maintaining an index.
+Chapter~\ref{ch:tornado} shows what happens when the off-chain indexer must
+reconstruct cryptographic state, not just find UTxOs.
+
+%--------------------------------------------------------------------------
+\section{Failure Modes and How to Recognise Them} \label{sec:ch7-failures}
+
+Almost every off-chain ZK bug on Cardano presents as the same unhelpful
+symptom. This table is the debugging shortcut this chapter exists to provide.
+
+\begin{center}
+\begin{tabular}{p{4.6cm}p{7.4cm}}
+  \hline
+  \textbf{Symptom} & \textbf{Cause} \\
+  \hline
+  snarkjs verifies, chain rejects
+    & Circuit compiled for BN254. Recompile with
+      \texttt{--prime bls12381}. \\
+  \addlinespace
+  \texttt{decompress} fails / script errors immediately
+    & Uncompressed points in datum or redeemer. Run
+      \texttt{compress\_vk.js} and \texttt{compress\_proof.js}. \\
+  \addlinespace
+  Constraint unsatisfiable during \texttt{fullprove}
+    & Hash computed with \texttt{circomlibjs} (BN254) instead of the
+      BLS12-381 helper circuit. \\
+  \addlinespace
+  \texttt{I caught an opaque type trying to escape}
+    & \texttt{Scalar} in a datum or redeemer. Use \texttt{Int} and
+      \texttt{scalar.new} inside the validator. \\
+  \addlinespace
+  Verification fails with a correct-looking hash
+    & \texttt{parseInt}/\texttt{Number} truncated the 255-bit field
+      element. Use \texttt{BigInt}. \\
+  \addlinespace
+  Fails only for some public inputs
+    & \texttt{vk\_ic} order wrong. $IC_0$ is the constant term;
+      $IC_{i+1}$ pairs with public input $i$. \\
+  \addlinespace
+  \texttt{ExUnits} exceeded
+    & More than four Groth16 verifications, or on-chain field
+      arithmetic. See Chapter~\ref{ch:tornado}. \\
+  \addlinespace
+  Datum mismatch at spend time
+    & Field order differs between the Aiken \texttt{type} and the
+      \texttt{mConStr0} array. \\
+  \hline
+\end{tabular}
+\end{center}
+
+\begin{remark}
+Notice how many of these are \emph{encoding} bugs rather than cryptographic
+ones. The mathematics is handled by libraries that are correct. The bugs live in
+the seams: field choice, point format, integer width, field order. Build a
+round-trip test for your encoding before you build a transaction.
+\end{remark}
+
+%--------------------------------------------------------------------------
+\section{Chapter Summary} \label{sec:ch7-summary}
+
+\begin{itemize}
+  \item The on-chain component of a ZK application on Cardano is tiny: 570
+        bytes of Plutus Core for a complete Groth16 verifier.
+  \item Circom + snarkjs + Groth16 over BLS12-381 is the only fully supported
+        path today. \texttt{--prime bls12381} is not optional.
+  \item Six pipeline stages: three per circuit (compile, setup, compress VK),
+        three per proof (witness, prove, compress proof).
+  \item Where the prover runs decides whether the system is actually private.
+        Client-side proving is the only architecture that delivers
+        zero-knowledge against the operator.
+  \item Plutus Data encoding is positional. \texttt{BigInt}, correct field
+        order, compressed points.
+  \item MeshJS builds both transactions in about thirty lines each:
+        \texttt{txOutInlineDatumValue} to lock,
+        \texttt{spendingPlutusScript("V3")} with
+        \texttt{txInRedeemerValue} to unlock.
+  \item A measured Groth16 verification costs 2{,}005{,}373{,}690 CPU steps and
+        34{,}219 memory units, 20\% of the CPU budget, $\approx$ 0.147 ADA,
+        and \emph{constant} in circuit size. Four verifications per transaction
+        is the hard ceiling.
+  \item \texttt{aiken-zk} generates most of this from an \texttt{offchain}
+        annotation, including the MeshJS redeemer, with the notable caveat
+        that its Merkle tree hash is mocked.
+  \item Proofs are bearer instruments. Bind them to a nonce, a recipient, or an
+        output reference, or they are replayable.
+\end{itemize}
+
+The next chapter takes everything in this one and points it at a hard target: a
+Tornado Cash--style mixer. We will find that the verification side works fine,
+and that the problem lies somewhere else entirely.

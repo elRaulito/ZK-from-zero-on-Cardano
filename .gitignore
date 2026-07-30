@@ -4,6 +4,7 @@ indent.log
 .claude/
 memory/
 eBook/notes/
+docs
 
 # LaTeX build artifacts
 eBook/*.pdf
